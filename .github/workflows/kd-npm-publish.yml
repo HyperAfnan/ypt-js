@@ -21,7 +21,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.event.release.target_commitish }}
-      
+
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -37,7 +37,7 @@ jobs:
           if [ "$LATEST_VERSION" != "unknown" ] && [ "$LATEST_VERSION" != "$CURRENT_VERSION" ]; then
             echo "::warning::npm-trusted-publisher v$LATEST_VERSION is available (current: v$CURRENT_VERSION). Run 'npx npm-trusted-publisher@latest init' to update your workflow."
           fi
-          
+
       - name: Install dependencies
         run: |
           if [ -f bun.lock ]; then
@@ -50,7 +50,7 @@ jobs:
             echo "No lockfile found, running npm install"
             npm install
           fi
-        
+
       - name: Configure Git
         run: |
           git config --global user.name "github-actions[bot]"
@@ -60,7 +60,7 @@ jobs:
         run: |
           VERSION=${GITHUB_REF_NAME#v}
           npm version $VERSION --no-git-tag-version --allow-same-version
-          
+
       - name: Update or Create CHANGELOG.md
         env:
           RELEASE_BODY: ${{ github.event.release.body }}
@@ -100,10 +100,10 @@ jobs:
               echo ""
             } > CHANGELOG.md
           fi
-          
+
       - name: Run tests (if present)
         run: npm run test --if-present
-        
+
       - name: Build project (if present)
         run: npm run build --if-present
 
@@ -141,7 +141,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          registry-url: 'https://registry.npmjs.org'
+          registry-url: "https://registry.npmjs.org"
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -159,6 +159,6 @@ jobs:
             echo "No lockfile found, running npm install"
             npm install
           fi
-          
+
       - name: Publish package to npm
         run: npm publish --provenance --access public
