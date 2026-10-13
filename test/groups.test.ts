@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { YptClient, YptValidationError, avatarUrl, formatDuration } from "../src";
+import { YptJs, YptValidationError, avatarUrl, formatDuration } from "../src";
 import { GROUPS_BODY, MEMBERS_BODY, mockFetch } from "./helpers";
 
 // 15 minutes after the sample session start in the endpoint reference.
@@ -8,7 +8,7 @@ const NOW = 1773456000000 + 900000;
 describe("groups", () => {
   it("lists joined groups and assigns roles by bucket", async () => {
     const { fn, calls } = mockFetch(() => ({ json: GROUPS_BODY }));
-    const client = new YptClient({ fetch: fn, token: "t" });
+    const client = new YptJs({ fetch: fn, token: "t" });
 
     const groups = await client.groups.listJoined();
 
@@ -49,7 +49,7 @@ describe("groups", () => {
         ps: [{ id: 3, t: "Pub" }],
       },
     }));
-    const client = new YptClient({ fetch: fn, token: "t" });
+    const client = new YptJs({ fetch: fn, token: "t" });
 
     const groups = await client.groups.listJoined();
 
@@ -62,7 +62,7 @@ describe("groups", () => {
 
   it("gets one joined group, or null", async () => {
     const { fn } = mockFetch(() => ({ json: GROUPS_BODY }));
-    const client = new YptClient({ fetch: fn, token: "t" });
+    const client = new YptJs({ fetch: fn, token: "t" });
 
     expect((await client.groups.get(6814572))?.name).toBe("Global Study Room");
     expect((await client.groups.get("6814572"))?.id).toBe(6814572);
@@ -71,7 +71,7 @@ describe("groups", () => {
 
   it("searches joined groups case-insensitively by id, name, category and owner", async () => {
     const { fn } = mockFetch(() => ({ json: GROUPS_BODY }));
-    const client = new YptClient({ fetch: fn, token: "t" });
+    const client = new YptJs({ fetch: fn, token: "t" });
 
     expect((await client.groups.searchJoined("study")).map((g) => g.id)).toEqual([6814572]);
     expect((await client.groups.searchJoined("ALGO")).map((g) => g.id)).toEqual([6487271]);
@@ -83,10 +83,432 @@ describe("groups", () => {
   });
 });
 
+describe("group search & creation", () => {
+  it("searches groups with filters and maps search results", async () => {
+    const { fn, calls } = mockFetch(() => ({
+      json: {
+        s: true,
+        groups: [
+          {
+            id: 12345,
+            title: "Study Zone",
+            category: "College",
+            category_id: 1,
+            owner: "LeaderBob",
+            members_count: 25,
+            max_people_num: 50,
+            is_private: false,
+            has_cam: true,
+            join_type: "DIRECT",
+            avg_study_seconds: 14400,
+            attendance_rate: 92,
+            description: "Daily grind",
+          },
+        ],
+      },
+    }));
+    const client = new YptJs({ fetch: fn, token: "t" });
+
+    const results = await client.groups.search({
+      q: "Study",
+      categoryId: 1,
+      orderType: "attendance",
+      onlyAvailable: true,
+      onlyCam: true,
+      onlyOpen: true,
+      page: 1,
+      limit: 20,
+    });
+
+    expect(calls[0].url.pathname).toBe("/group/list/search-2");
+    expect(calls[0].url.searchParams.get("q")).toBe("Study");
+    expect(calls[0].url.searchParams.get("category_id")).toBe("1");
+    expect(calls[0].url.searchParams.get("order_type")).toBe("attendance");
+    expect(calls[0].url.searchParams.get("only_available")).toBe("true");
+    expect(calls[0].url.searchParams.get("only_cam")).toBe("true");
+    expect(calls[0].url.searchParams.get("only_open")).toBe("true");
+
+    expect(results).toEqual([
+      {
+        id: 12345,
+        name: "Study Zone",
+        category: "College",
+        categoryId: 1,
+        owner: "LeaderBob",
+        memberCount: 25,
+        maxCapacity: 50,
+        isPrivate: false,
+        hasCam: true,
+        joinType: "DIRECT",
+        averageStudySeconds: 14400,
+        attendanceRate: 92,
+        description: "Daily grind",
+      },
+    ]);
+  });
+
+  it("validates group title and rejects empty title", async () => {
+    const { fn, calls } = mockFetch(() => ({ json: { s: true } }));
+    const client = new YptJs({ fetch: fn, token: "t" });
+
+    const res = await client.groups.validateTitle("Focus Hall");
+    expect(calls[0].url.pathname).toBe("/group/make/title/validate");
+    expect(calls[0].body).toEqual({ title: "Focus Hall" });
+    expect(res).toEqual({ valid: true, message: undefined });
+
+    await expect(client.groups.validateTitle("   ")).rejects.toBeInstanceOf(YptValidationError);
+  });
+
+  it("creates a group and returns group id", async () => {
+    const { fn, calls } = mockFetch(() => ({ json: { s: true, id: 98765 } }));
+    const client = new YptJs({ fetch: fn, token: "t" });
+
+    const created = await client.groups.create({
+      title: "Morning Routine",
+      categoryId: 2,
+      description: "Early birds",
+      maxPeopleNum: 30,
+      joinType: "DIRECT",
+      minDailyStudySeconds: 7200,
+      allowChat: true,
+    });
+
+    expect(calls[0].url.pathname).toBe("/group/make/v2");
+    expect(calls[0].body).toEqual({
+      title: "Morning Routine",
+      category_id: 2,
+      description: "Early birds",
+      maxPeopleNum: 30,
+      join_type: "DIRECT",
+      password: null,
+      min_daily_study_seconds: 7200,
+      questions: undefined,
+      allow_chat: true,
+    });
+    expect(created).toEqual({ id: 98765, title: "Morning Routine" });
+  });
+});
+
+describe("group membership & applications", () => {
+  it("joins an open or password-protected group", async () => {
+    const { fn, calls } = mockFetch(() => ({ json: { s: true } }));
+    const client = new YptJs({ fetch: fn, token: "t" });
+
+    await client.groups.join(12345);
+    expect(calls[0].url.pathname).toBe("/group/join/v2");
+    expect(calls[0].body).toEqual({ group_id: 12345, password: undefined });
+
+    await client.groups.join("12345", { password: "secret-pass" });
+    expect(calls[1].body).toEqual({ group_id: 12345, password: "secret-pass" });
+  });
+
+  it("applies to an approval-required group with answers", async () => {
+    const { fn, calls } = mockFetch(() => ({ json: { s: true } }));
+    const client = new YptJs({ fetch: fn, token: "t" });
+
+    await client.groups.apply(12345, { answers: ["Goal: 5 hours", "Focus: CS"] });
+    expect(calls[0].url.pathname).toBe("/group/group-user/join-info");
+    expect(calls[0].body).toEqual({
+      group_id: 12345,
+      answers: ["Goal: 5 hours", "Focus: CS"],
+    });
+  });
+
+  it("reviews group applicant with approval or rejection", async () => {
+    const { fn, calls } = mockFetch(() => ({ json: { s: true } }));
+    const client = new YptJs({ fetch: fn, token: "t" });
+
+    await client.groups.reviewApplicant(12345, {
+      applicantUserId: 999,
+      approved: true,
+    });
+    expect(calls[0].url.pathname).toBe("/group/group-user/join/approve-or-reject");
+    expect(calls[0].body).toEqual({
+      group_id: 12345,
+      applicant_user_id: 999,
+      approved: true,
+      reject_reason: null,
+    });
+
+    await client.groups.reviewApplicant(12345, {
+      applicantUserId: 999,
+      approved: false,
+      rejectReason: "Capacity reached",
+    });
+    expect(calls[1].body).toEqual({
+      group_id: 12345,
+      applicant_user_id: 999,
+      approved: false,
+      reject_reason: "Capacity reached",
+    });
+  });
+
+  it("leaves a group", async () => {
+    const { fn, calls } = mockFetch(() => ({ json: { s: true } }));
+    const client = new YptJs({ fetch: fn, token: "t" });
+
+    await client.groups.leave(12345);
+    expect(calls[0].url.pathname).toBe("/group/leave");
+    expect(calls[0].body).toEqual({ group_id: 12345 });
+
+    await client.groups.leave(12345, 100);
+    expect(calls[1].body).toEqual({ group_id: 12345, userId: 100 });
+  });
+});
+
+describe("group moderation", () => {
+  it("warns and cancels warning for a member", async () => {
+    const { fn, calls } = mockFetch(() => ({ json: { s: true } }));
+    const client = new YptJs({ fetch: fn, token: "t" });
+
+    await client.groups.warnMember(12345, 555);
+    expect(calls[0].url.pathname).toBe("/group/warn");
+    expect(calls[0].body).toEqual({ group_id: 12345, userId: 555 });
+
+    await client.groups.cancelWarning(12345, 555);
+    expect(calls[1].url.pathname).toBe("/group/warn/cancel");
+    expect(calls[1].body).toEqual({ group_id: 12345, userId: 555 });
+  });
+
+  it("kicks a member from group", async () => {
+    const { fn, calls } = mockFetch(() => ({ json: { s: true } }));
+    const client = new YptJs({ fetch: fn, token: "t" });
+
+    await client.groups.kickMember(12345, 555);
+    expect(calls[0].url.pathname).toBe("/group/kick-out");
+    expect(calls[0].body).toEqual({ group_id: 12345, userId: 555 });
+  });
+
+  it("manages blacklist (add, delete, list)", async () => {
+    const { fn, calls } = mockFetch((call) => {
+      if (call.url.pathname === "/group/black/all") {
+        return {
+          json: {
+            s: true,
+            users: [{ userId: 555, nickname: "BannedUser", created_at: "2026-10-10T12:00:00Z" }],
+          },
+        };
+      }
+      return { json: { s: true } };
+    });
+    const client = new YptJs({ fetch: fn, token: "t" });
+
+    await client.groups.blacklistMember(12345, 555);
+    expect(calls[0].url.pathname).toBe("/group/black/add");
+    expect(calls[0].body).toEqual({ group_id: 12345, userId: 555 });
+
+    await client.groups.removeBlacklist(12345, 555);
+    expect(calls[1].url.pathname).toBe("/group/black/delete");
+    expect(calls[1].body).toEqual({ group_id: 12345, userId: 555 });
+
+    const blacklist = await client.groups.listBlacklist(12345);
+    expect(calls[2].url.pathname).toBe("/group/black/all");
+    expect(calls[2].url.searchParams.get("group_id")).toBe("12345");
+    expect(blacklist).toEqual([
+      { userId: 555, nickname: "BannedUser", createdAt: "2026-10-10T12:00:00Z" },
+    ]);
+  });
+});
+
+describe("modern members payload and options", () => {
+  it("parses modern members array with roles, subjects, and study seconds", async () => {
+    const { fn, calls } = mockFetch(() => ({
+      json: {
+        s: true,
+        members: [
+          {
+            user_id: 777,
+            nickname: "ModernStudent",
+            role: "LEADER",
+            is_studying: true,
+            today_study_seconds: 7200,
+            current_subject: {
+              id: 10,
+              name: "Quantum Mechanics",
+              color: "#FF5733",
+            },
+            profile_image: "https://picf.tgclab.com/users/777.jpg",
+            has_active_cam: true,
+            cam_snapshot_url: "https://cam.tgclab.com/snap/777.jpg",
+            warning_count: 1,
+            state_icon: "flame",
+          },
+        ],
+      },
+    }));
+    const client = new YptJs({ fetch: fn, token: "t", now: () => NOW });
+
+    const members = await client.groups.getMembers(12345, { includeAllUsers: true });
+
+    expect(calls[0].url.pathname).toBe("/logs/group/members/v2");
+    expect(calls[0].url.searchParams.get("groupID")).toBe("12345");
+    expect(calls[0].url.searchParams.get("include_all_users")).toBe("true");
+
+    expect(members).toHaveLength(1);
+    expect(members[0]).toMatchObject({
+      userId: 777,
+      nickname: "ModernStudent",
+      role: "LEADER",
+      isStudying: true,
+      todayStudyMs: 7200000,
+      todayStudyTime: "02:00:00",
+      currentSubject: "Quantum Mechanics",
+      subjectDetails: {
+        id: 10,
+        name: "Quantum Mechanics",
+        color: "#FF5733",
+      },
+      profileImage: "https://picf.tgclab.com/users/777.jpg",
+      avatarUrl: "https://picf.tgclab.com/users/777.jpg",
+      hasActiveCam: true,
+      camSnapshotUrl: "https://cam.tgclab.com/snap/777.jpg",
+      warningCount: 1,
+      stateIcon: "flame",
+    });
+  });
+});
+
+describe("attendance & leaderboard", () => {
+  it("fetches attendance matrix across date range", async () => {
+    const { fn, calls } = mockFetch(() => ({
+      json: {
+        s: true,
+        startDate: "2026-10-01",
+        endDate: "2026-10-07",
+        attendances: [
+          {
+            userId: 100,
+            nickname: "Alex",
+            streak: 5,
+            total_seconds: 36000,
+            days: [
+              { date: "2026-10-01", study_seconds: 7200, passed: true },
+              { date: "2026-10-02", study_seconds: 0, passed: false },
+            ],
+          },
+        ],
+      },
+    }));
+    const client = new YptJs({ fetch: fn, token: "t" });
+
+    const res = await client.groups.getAttendances(12345, "2026-10-01", "2026-10-07");
+
+    expect(calls[0].url.pathname).toBe("/logs/v70701/group/attendances");
+    expect(calls[0].url.searchParams.get("group_id")).toBe("12345");
+    expect(calls[0].url.searchParams.get("startDate")).toBe("2026-10-01");
+    expect(calls[0].url.searchParams.get("endDate")).toBe("2026-10-07");
+
+    expect(res).toEqual({
+      startDate: "2026-10-01",
+      endDate: "2026-10-07",
+      attendances: [
+        {
+          userId: 100,
+          nickname: "Alex",
+          streakDays: 5,
+          totalSeconds: 36000,
+          days: [
+            { date: "2026-10-01", studySeconds: 7200, passed: true },
+            { date: "2026-10-02", studySeconds: 0, passed: false },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("fetches group leaderboard by type", async () => {
+    const { fn, calls } = mockFetch(() => ({
+      json: {
+        s: true,
+        type: "weekly",
+        ranks: [
+          {
+            rank: 1,
+            user_id: 100,
+            nickname: "Champion",
+            study_seconds: 72000,
+            profile_image: "https://picf.tgclab.com/users/100.jpg",
+          },
+        ],
+      },
+    }));
+    const client = new YptJs({ fetch: fn, token: "t" });
+
+    const res = await client.groups.getLeaderboard(12345, "weekly");
+
+    expect(calls[0].url.pathname).toBe("/logs/group/member/ranks");
+    expect(calls[0].url.searchParams.get("group_id")).toBe("12345");
+    expect(calls[0].url.searchParams.get("type")).toBe("weekly");
+
+    expect(res).toEqual({
+      type: "weekly",
+      ranks: [
+        {
+          rank: 1,
+          userId: 100,
+          nickname: "Champion",
+          studySeconds: 72000,
+          studyTime: "20:00:00",
+          profileImage: "https://picf.tgclab.com/users/100.jpg",
+        },
+      ],
+    });
+  });
+});
+
+describe("social & accountability", () => {
+  it("nudges single member and all members", async () => {
+    const { fn, calls } = mockFetch(() => ({ json: { s: true } }));
+    const client = new YptJs({ fetch: fn, token: "t" });
+
+    await client.groups.nudge(12345, 888);
+    expect(calls[0].url.pathname).toBe("/group/push/shake");
+    expect(calls[0].body).toEqual({ group_id: 12345, target_user_id: 888 });
+
+    await client.groups.nudgeAll(12345);
+    expect(calls[1].url.pathname).toBe("/group/push/shake/all");
+    expect(calls[1].body).toEqual({ group_id: 12345 });
+  });
+
+  it("sends chat message and validates empty text", async () => {
+    const { fn, calls } = mockFetch(() => ({ json: { s: true } }));
+    const client = new YptJs({ fetch: fn, token: "t" });
+
+    await client.groups.sendChatMessage(12345, "Let's study hard today!", {
+      imageUrls: ["https://example.com/notes.png"],
+    });
+    expect(calls[0].url.pathname).toBe("/group/chat");
+    expect(calls[0].body).toEqual({
+      group_id: 12345,
+      message: "Let's study hard today!",
+      image_urls: ["https://example.com/notes.png"],
+    });
+
+    await expect(client.groups.sendChatMessage(12345, "  ")).rejects.toBeInstanceOf(
+      YptValidationError,
+    );
+  });
+
+  it("posts official group notice and validates empty content", async () => {
+    const { fn, calls } = mockFetch(() => ({ json: { s: true } }));
+    const client = new YptJs({ fetch: fn, token: "t" });
+
+    await client.groups.postNotice(12345, "Meeting at 9 PM", { sendPush: false });
+    expect(calls[0].url.pathname).toBe("/group/notice");
+    expect(calls[0].body).toEqual({
+      group_id: 12345,
+      content: "Meeting at 9 PM",
+      send_push: false,
+    });
+
+    await expect(client.groups.postNotice(12345, "")).rejects.toBeInstanceOf(YptValidationError);
+  });
+});
+
 describe("members", () => {
   it("requests groupID only (never countryID) and computes live study time", async () => {
     const { fn, calls } = mockFetch(() => ({ json: MEMBERS_BODY }));
-    const client = new YptClient({ fetch: fn, token: "t", now: () => NOW });
+    const client = new YptJs({ fetch: fn, token: "t", now: () => NOW });
 
     const members = await client.groups.getMembers(6814572);
 
@@ -136,7 +558,7 @@ describe("members", () => {
         ],
       },
     }));
-    const client = new YptClient({ fetch: fn, token: "t", now: () => NOW });
+    const client = new YptJs({ fetch: fn, token: "t", now: () => NOW });
 
     const [future, noStart] = await client.groups.getMembers(1);
 
@@ -164,7 +586,7 @@ describe("members", () => {
         ],
       },
     }));
-    const client = new YptClient({ fetch: fn, token: "t", now: () => NOW });
+    const client = new YptJs({ fetch: fn, token: "t", now: () => NOW });
 
     const [m] = await client.groups.getMembers(1);
 
@@ -186,7 +608,7 @@ describe("members", () => {
         ? { json: { s: true, ms: [null, { n: "no id" }, { ud: 5, n: "ok" }] } }
         : { json: { s: true } },
     );
-    const client = new YptClient({ fetch: fn, token: "t" });
+    const client = new YptJs({ fetch: fn, token: "t" });
 
     expect((await client.groups.getMembers(1)).map((m) => m.userId)).toEqual([5]);
     expect(await client.groups.getMembers(1)).toEqual([]);
@@ -194,7 +616,7 @@ describe("members", () => {
 
   it("rejects non-numeric group ids before making a request", async () => {
     const { fn, calls } = mockFetch(() => ({ json: MEMBERS_BODY }));
-    const client = new YptClient({ fetch: fn, token: "t" });
+    const client = new YptJs({ fetch: fn, token: "t" });
 
     await expect(client.groups.getMembers("1&countryID=KR")).rejects.toBeInstanceOf(
       YptValidationError,
@@ -239,7 +661,7 @@ describe("listAllMembers", () => {
             },
           };
     });
-    const client = new YptClient({ fetch: fn, token: "t", now: () => NOW2 });
+    const client = new YptJs({ fetch: fn, token: "t", now: () => NOW2 });
 
     const result = await client.groups.listAllMembers();
 
@@ -273,7 +695,7 @@ describe("listAllMembers", () => {
             },
           };
     });
-    const client = new YptClient({ fetch: fn, token: "t", now: () => NOW2 });
+    const client = new YptJs({ fetch: fn, token: "t", now: () => NOW2 });
 
     const { members } = await client.groups.listAllMembers();
 
@@ -293,7 +715,7 @@ describe("listAllMembers", () => {
         ? { json: { s: true, ms: [{ ud: 10, n: "X", dl: { sm: 1000 } }] } }
         : { status: 500, json: {} };
     });
-    const client = new YptClient({ fetch: fn, token: "t", maxRetries: 0 });
+    const client = new YptJs({ fetch: fn, token: "t", maxRetries: 0 });
 
     const result = await client.groups.listAllMembers();
 
@@ -307,7 +729,7 @@ describe("listAllMembers", () => {
     const { fn } = mockFetch((c) =>
       c.url.pathname === "/group/groups/v2" ? { json: twoGroups } : { status: 500, json: {} },
     );
-    const client = new YptClient({ fetch: fn, token: "t", maxRetries: 0 });
+    const client = new YptJs({ fetch: fn, token: "t", maxRetries: 0 });
 
     await expect(client.groups.listAllMembers()).rejects.toMatchObject({ status: 500 });
   });

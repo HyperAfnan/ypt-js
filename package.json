@@ -1,5 +1,5 @@
 {
-  "name": "ypt-client",
+  "name": "ypt-js",
   "version": "0.1.0",
   "description": "Unofficial TypeScript client for the Yeolpumta (YPT) study app",
   "license": "MIT",

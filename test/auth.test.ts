@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { YptApiError, YptAuthError, YptClient, YptHttpError } from "../src";
-import { GROUPS_BODY, SIGN_IN_OK, mockFetch } from "./helpers";
+import {
+  YptApiError,
+  YptAuthError,
+  YptJs,
+  YptHttpError,
+  YptValidationError,
+  validatePassword,
+} from "../src";
+import {
+  GROUPS_BODY,
+  SIGN_IN_OK,
+  SIGN_IN_MODERN_OK,
+  SOCIAL_SIGN_UP_OK,
+  mockFetch,
+} from "./helpers";
 
 describe("auth", () => {
   it("signs in with the bare JWT header, does the splash handshake, then uses the token", async () => {
@@ -10,7 +23,7 @@ describe("auth", () => {
       return { json: GROUPS_BODY };
     });
     const tokens: string[] = [];
-    const client = new YptClient({ fetch: fn, onTokenChange: (t) => tokens.push(t) });
+    const client = new YptJs({ fetch: fn, onTokenChange: (t) => tokens.push(t) });
 
     const user = await client.auth.signIn({ email: "user@example.com", password: "pw" });
 
@@ -56,14 +69,14 @@ describe("auth", () => {
 
   it("can skip the splash handshake", async () => {
     const { fn, calls } = mockFetch(() => ({ json: SIGN_IN_OK }));
-    const client = new YptClient({ fetch: fn });
+    const client = new YptJs({ fetch: fn });
     await client.auth.signIn({ email: "a@b.c", password: "pw" }, { splash: false });
     expect(calls).toHaveLength(1);
   });
 
   it("maps sign-in failure codes to YptAuthError", async () => {
     const { fn } = mockFetch(() => ({ json: { s: false, c: 112, m: "Incorrect password" } }));
-    const client = new YptClient({ fetch: fn });
+    const client = new YptJs({ fetch: fn });
 
     const err = await client.auth.signIn({ email: "a@b.c", password: "bad" }).catch((e) => e);
 
@@ -75,7 +88,7 @@ describe("auth", () => {
 
   it("maps other error envelopes to YptApiError (not YptAuthError)", async () => {
     const { fn } = mockFetch(() => ({ json: { s: false, c: 999, m: "Something else" } }));
-    const client = new YptClient({ fetch: fn, token: "t" });
+    const client = new YptJs({ fetch: fn, token: "t" });
 
     const err = await client.groups.listJoined().catch((e) => e);
 
@@ -86,7 +99,7 @@ describe("auth", () => {
 
   it("fails fast with YptAuthError when there is no token and no credentials", async () => {
     const { fn, calls } = mockFetch(() => ({ json: GROUPS_BODY }));
-    const client = new YptClient({ fetch: fn });
+    const client = new YptJs({ fetch: fn });
 
     await expect(client.groups.listJoined()).rejects.toBeInstanceOf(YptAuthError);
     expect(calls).toHaveLength(0);
@@ -98,7 +111,7 @@ describe("auth", () => {
       if (c.url.pathname === "/user/v2/splash-login") return { json: { s: true } };
       return { json: GROUPS_BODY };
     });
-    const client = new YptClient({ fetch: fn, credentials: { email: "a@b.c", password: "pw" } });
+    const client = new YptJs({ fetch: fn, credentials: { email: "a@b.c", password: "pw" } });
 
     const groups = await client.groups.listJoined();
 
@@ -116,7 +129,7 @@ describe("auth", () => {
       if (c.url.pathname === "/user/v2/splash-login") return { json: { s: true } };
       return { json: GROUPS_BODY };
     });
-    const client = new YptClient({ fetch: fn, credentials: { email: "a@b.c", password: "pw" } });
+    const client = new YptJs({ fetch: fn, credentials: { email: "a@b.c", password: "pw" } });
 
     await Promise.all([client.groups.listJoined(), client.groups.listJoined()]);
 
@@ -132,7 +145,7 @@ describe("auth", () => {
       }
       return { json: GROUPS_BODY };
     });
-    const client = new YptClient({
+    const client = new YptJs({
       fetch: fn,
       token: "old",
       credentials: { email: "a@b.c", password: "pw" },
@@ -152,10 +165,202 @@ describe("auth", () => {
 
   it("throws YptAuthError on 401 when there are no credentials to retry with", async () => {
     const { fn, calls } = mockFetch(() => ({ status: 401, json: { s: false, m: "expired" } }));
-    const client = new YptClient({ fetch: fn, token: "old" });
+    const client = new YptJs({ fetch: fn, token: "old" });
 
     await expect(client.groups.listJoined()).rejects.toBeInstanceOf(YptAuthError);
     expect(calls).toHaveLength(1);
+  });
+
+  it("signs in with modern dual-token response and maps enriched user profile", async () => {
+    const { fn } = mockFetch((c) => {
+      if (c.url.pathname === "/user/sign-in-jwt") return { json: SIGN_IN_MODERN_OK };
+      if (c.url.pathname === "/user/v2/splash-login") return { json: { s: true } };
+      return { json: {} };
+    });
+
+    const sessions: any[] = [];
+    const client = new YptJs({ fetch: fn, onSessionChange: (s) => sessions.push(s) });
+    const user = await client.auth.signIn({ email: "student@example.com", password: "Password1!" });
+
+    expect(client.token).toBe("access-token-123");
+    expect(client.accessToken).toBe("access-token-123");
+    expect(client.refreshToken).toBe("refresh-token-456");
+    expect(client.expiresAt).toBe(1730000000);
+    expect(client.isAuthenticated).toBe(true);
+    expect(user).toMatchObject({
+      id: 1049281,
+      email: "student@example.com",
+      nickname: "HardWorker2026",
+      statusMsg: "Studying for exams",
+      profileImage: "https://picf.tgclab.com/users/avatar.jpg",
+      flames: 12,
+      tier: "GOLD",
+      createdAt: "2024-03-15T08:30:00Z",
+    });
+    expect(sessions.length).toBeGreaterThanOrEqual(1);
+    expect(sessions[0].accessToken).toBe("access-token-123");
+  });
+
+  it("handles socialSignUp with Kakao provider and sends correct payload", async () => {
+    const { fn, calls } = mockFetch((c) => {
+      if (c.url.pathname === "/user/social/sign-up-jwt") return { json: SOCIAL_SIGN_UP_OK };
+      if (c.url.pathname === "/user/v2/splash-login") return { json: { s: true } };
+      return { json: {} };
+    });
+
+    const client = new YptJs({ fetch: fn });
+    const user = await client.auth.socialSignUp({
+      provider: "KAKAO",
+      token: "oauth-kakao-token",
+      nickname: "StudyWarrior",
+    });
+
+    expect(calls[0].url.pathname).toBe("/user/social/sign-up-jwt");
+    expect(calls[0].body).toEqual({
+      provider: "KAKAO",
+      token: "oauth-kakao-token",
+      nickname: "StudyWarrior",
+      operatingSystem: "android",
+      terms: true,
+      privacy: true,
+      age_over_14: true,
+    });
+    expect(client.token).toBe("social-access-tok-789");
+    expect(client.refreshToken).toBe("social-refresh-tok-012");
+    expect(user.socialType).toBe("KAKAO");
+  });
+
+  it("splashLogin transmits refreshToken and updates tokens on rotation", async () => {
+    const { fn, calls } = mockFetch(() => ({
+      json: {
+        s: true,
+        accessToken: "rotated-access-token",
+        refreshToken: "rotated-refresh-token",
+        expiresAt: 1800000000,
+      },
+    }));
+
+    const client = new YptJs({ fetch: fn, refreshToken: "initial-refresh-token" });
+    const res = await client.auth.splashLogin();
+
+    expect(calls[0].body.refreshToken).toBe("initial-refresh-token");
+    expect(res.accessToken).toBe("rotated-access-token");
+    expect(client.token).toBe("rotated-access-token");
+    expect(client.refreshToken).toBe("rotated-refresh-token");
+  });
+
+  it("restoreSession restores session from valid refreshToken", async () => {
+    const { fn } = mockFetch(() => ({
+      json: { s: true, accessToken: "restored-token" },
+    }));
+
+    const client = new YptJs({ fetch: fn });
+    await client.auth.restoreSession("my-saved-refresh-token");
+    expect(client.token).toBe("restored-token");
+    expect(client.isAuthenticated).toBe(true);
+  });
+
+  it("restoreSession rejects invalid/empty refreshToken", async () => {
+    const { fn } = mockFetch(() => ({ json: { s: true } }));
+    const client = new YptJs({ fetch: fn });
+    await expect(client.auth.restoreSession("")).rejects.toBeInstanceOf(YptValidationError);
+  });
+
+  it("re-authenticates automatically with refreshToken on 401 before credentials", async () => {
+    let getCallCount = 0;
+    const { fn } = mockFetch((c) => {
+      if (c.url.pathname === "/group/groups/v2") {
+        getCallCount++;
+        if (getCallCount === 1) return { status: 401, json: { s: false, m: "token expired" } };
+        return { json: GROUPS_BODY };
+      }
+      if (c.url.pathname === "/user/v2/splash-login") {
+        return { json: { s: true, accessToken: "new-access-token-from-refresh" } };
+      }
+      return { json: {} };
+    });
+
+    const client = new YptJs({
+      fetch: fn,
+      token: "old-token",
+      refreshToken: "saved-refresh-token",
+    });
+
+    const groups = await client.groups.listJoined();
+    expect(groups).toHaveLength(2);
+    expect(client.token).toBe("new-access-token-from-refresh");
+  });
+
+  it("exchanges custom token with Firebase endpoint", async () => {
+    const { fn, calls } = mockFetch(() => ({
+      json: { s: true, token: "firebase-custom-jwt-token" },
+    }));
+
+    const client = new YptJs({ fetch: fn, token: "tok" });
+    const fbToken = await client.auth.getFirebaseCustomToken();
+
+    expect(fbToken).toBe("firebase-custom-jwt-token");
+    expect(calls[0].url.pathname).toBe("/user/firebase/custom-token");
+  });
+
+  it("registers device push token", async () => {
+    const { fn, calls } = mockFetch(() => ({ json: { s: true } }));
+    const client = new YptJs({ fetch: fn, token: "tok" });
+    await client.auth.registerPushToken("fcm-device-push-token-123");
+
+    expect(calls[0].url.pathname).toBe("/user/push-token");
+    expect(calls[0].body.token).toBe("fcm-device-push-token-123");
+  });
+
+  it("performs account operations (checkUsername, updateNickname, updateStatusMessage, logout)", async () => {
+    const { fn } = mockFetch((c) => {
+      if (c.url.pathname === "/user/exist-username") return { json: { s: true, exist: true } };
+      if (c.url.pathname === "/user/nickname/change") return { json: { s: true } };
+      if (c.url.pathname === "/user/status_msg/change") return { json: { s: true } };
+      if (c.url.pathname === "/user/logout") return { json: { s: true } };
+      return { json: {} };
+    });
+
+    const client = new YptJs({ fetch: fn, token: "tok" });
+    client.setSession({ accessToken: "tok", refreshToken: "ref" });
+
+    const exists = await client.auth.checkUsername("HardWorker");
+    expect(exists).toBe(true);
+
+    await client.auth.updateNickname("NewNick");
+    await client.auth.updateStatusMessage("New Status");
+
+    expect(client.isAuthenticated).toBe(true);
+    await client.auth.logout();
+    expect(client.isAuthenticated).toBe(false);
+    expect(client.token).toBeUndefined();
+    expect(client.refreshToken).toBeUndefined();
+  });
+
+  it("supports authScheme: Bearer", async () => {
+    const { fn, calls } = mockFetch(() => ({ json: GROUPS_BODY }));
+    const client = new YptJs({ fetch: fn, token: "my-token", authScheme: "Bearer" });
+
+    await client.groups.listJoined();
+    expect(calls[0].headers.get("authorization")).toBe("Bearer my-token");
+  });
+
+  it("validates password rules with validatePassword and strictPasswordValidation", async () => {
+    expect(validatePassword("short").valid).toBe(false);
+    expect(validatePassword("alllowercase").valid).toBe(false);
+    expect(validatePassword("ALLUPPERCASE").valid).toBe(false);
+    expect(validatePassword("12345678").valid).toBe(false);
+    expect(validatePassword("ValidPass1!").valid).toBe(true);
+
+    const { fn } = mockFetch(() => ({ json: SIGN_IN_OK }));
+    const client = new YptJs({ fetch: fn });
+
+    await expect(
+      client.auth.signIn(
+        { email: "user@example.com", password: "short" },
+        { strictPasswordValidation: true },
+      ),
+    ).rejects.toBeInstanceOf(YptValidationError);
   });
 });
 
@@ -164,7 +369,7 @@ describe("retries", () => {
     const { fn, calls } = mockFetch((_c, n) =>
       n === 1 ? { status: 503, json: {} } : { json: GROUPS_BODY },
     );
-    const client = new YptClient({ fetch: fn, token: "t", retryDelayMs: 0 });
+    const client = new YptJs({ fetch: fn, token: "t", retryDelayMs: 0 });
 
     const groups = await client.groups.listJoined();
 
@@ -174,7 +379,7 @@ describe("retries", () => {
 
   it("gives up after maxRetries and throws YptHttpError", async () => {
     const { fn, calls } = mockFetch(() => ({ status: 500, json: {} }));
-    const client = new YptClient({ fetch: fn, token: "t", retryDelayMs: 0, maxRetries: 2 });
+    const client = new YptJs({ fetch: fn, token: "t", retryDelayMs: 0, maxRetries: 2 });
 
     const err = await client.groups.listJoined().catch((e) => e);
 
@@ -185,7 +390,7 @@ describe("retries", () => {
 
   it("never retries POST (sign-in)", async () => {
     const { fn, calls } = mockFetch(() => ({ status: 503, json: {} }));
-    const client = new YptClient({ fetch: fn, retryDelayMs: 0 });
+    const client = new YptJs({ fetch: fn, retryDelayMs: 0 });
 
     await expect(client.auth.signIn({ email: "a@b.c", password: "pw" })).rejects.toBeInstanceOf(
       YptHttpError,

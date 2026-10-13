@@ -1,12 +1,23 @@
 import type {
   Group,
+  GroupAttendanceResult,
+  GroupLeaderboardResult,
   GroupMember,
+  GroupMemberRole,
   GroupRole,
+  LeaderboardType,
+  RawAttendanceResponse,
   RawGroup,
   RawGroupsResponse,
   RawMember,
   RawMembersResponse,
+  RawModernGroupMember,
+  RawRanksResponse,
+  RawSearchGroupsResponse,
+  RawSignInResponse,
+  SearchGroupResult,
   UnifiedMember,
+  YptUser,
 } from "./types";
 
 export const DEFAULT_CDN_URL = "https://alicdn.tgclab.com";
@@ -66,6 +77,79 @@ export function avatarUrl(
 }
 
 // ---------------------------------------------------------------------------
+// Authentication & User Mappers
+// ---------------------------------------------------------------------------
+
+export interface PasswordValidationResult {
+  valid: boolean;
+  reason?: string;
+}
+
+/**
+ * Validates a password according to YPT client rules:
+ * - Minimum 8 characters
+ * - Must include characters from at least 2 categories (uppercase, lowercase, numbers, special symbols)
+ */
+export function validatePassword(password: string): PasswordValidationResult {
+  if (typeof password !== "string" || password.length < 8) {
+    return {
+      valid: false,
+      reason: "Password must be at least 8 characters long.",
+    };
+  }
+
+  const hasUpper = /[A-Z]/.test(password);
+  const hasLower = /[a-z]/.test(password);
+  const hasNumber = /[0-9]/.test(password);
+  const hasSpecial = /[^A-Za-z0-9]/.test(password);
+
+  const categories = [hasUpper, hasLower, hasNumber, hasSpecial].filter(Boolean).length;
+  if (categories < 2) {
+    return {
+      valid: false,
+      reason:
+        "Password must contain characters from at least 2 categories: uppercase, lowercase, numbers, or special symbols.",
+    };
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Normalizes either legacy or modern YPT sign-in/social response into a typed YptUser.
+ */
+export function mapUser(raw: RawSignInResponse, fallbackEmail: string = ""): YptUser {
+  const rawUser = raw.user;
+  const idVal = rawUser?.id ?? raw.id ?? raw.ud;
+  const idNum = num(idVal) ?? 0;
+  const nickname = str(rawUser?.nickname ?? raw.n) ?? "";
+  const email = str(rawUser?.email ?? raw.e) ?? fallbackEmail;
+  const today = str(raw.today) ?? null;
+  const statusMsg = str(rawUser?.status_msg ?? rawUser?.statusMsg);
+  const profileImage = str(rawUser?.profile_image ?? rawUser?.profileImage);
+  const flames = typeof rawUser?.flames === "number" ? rawUser.flames : undefined;
+  const tier = str(rawUser?.tier);
+  const createdAt = str(rawUser?.created_at ?? rawUser?.createdAt);
+  const socialType = str(rawUser?.social_type ?? rawUser?.socialType) as YptUser["socialType"];
+
+  const user: YptUser = {
+    id: idNum,
+    nickname,
+    email,
+    today,
+  };
+
+  if (statusMsg) user.statusMsg = statusMsg;
+  if (profileImage) user.profileImage = profileImage;
+  if (typeof flames === "number") user.flames = flames;
+  if (tier) user.tier = tier;
+  if (createdAt) user.createdAt = createdAt;
+  if (socialType) user.socialType = socialType;
+
+  return user;
+}
+
+// ---------------------------------------------------------------------------
 // Groups
 // ---------------------------------------------------------------------------
 
@@ -117,36 +201,63 @@ export function mapGroups(raw: RawGroupsResponse): Group[] {
 // ---------------------------------------------------------------------------
 
 export function mapMember(
-  raw: RawMember,
+  raw: RawMember | RawModernGroupMember,
   now: number,
   cdnUrl: string = DEFAULT_CDN_URL,
 ): GroupMember | null {
   if (!isRecord(raw)) return null;
-  const userId = num(raw.ud ?? raw.id);
+
+  const rawModern = raw as RawModernGroupMember;
+  const rawLegacy = raw as RawMember;
+
+  const userId = num(rawModern.user_id ?? rawModern.userId ?? rawLegacy.ud ?? rawLegacy.id);
   if (userId === null) return null;
 
-  const dl = isRecord(raw.dl) ? raw.dl : {};
-  const todayStudyMs = Math.max(0, num(dl.sm) ?? 0);
-  const isStudying = Boolean(dl.is);
+  const dl = isRecord(rawLegacy.dl) ? rawLegacy.dl : {};
+
+  // Study seconds: modern sends today_study_seconds, legacy sends dl.sm in ms
+  let todayStudyMs = 0;
+  if (rawModern.today_study_seconds !== undefined) {
+    todayStudyMs = Math.max(0, (num(rawModern.today_study_seconds) ?? 0) * 1000);
+  } else {
+    todayStudyMs = Math.max(0, num(dl.sm) ?? 0);
+  }
+
+  const isStudying =
+    rawModern.is_studying !== undefined ? Boolean(rawModern.is_studying) : Boolean(dl.is);
   const isPaused = Boolean(dl.ia ?? dl.ip);
   const sessionStartMs = num(dl.ss) ?? parseIso(dl.st);
 
-  // While studying, `sm` only holds the time recorded up to the session start,
-  // so the running session has to be added on top.
   const sessionElapsedMs =
     isStudying && sessionStartMs !== null && now > sessionStartMs ? now - sessionStartMs : 0;
   const liveStudyMs = todayStudyMs + sessionElapsedMs;
 
-  const studiconId = num(raw.sd ?? raw.si);
-  const hasCustomAvatar = Boolean(raw.hasCustomAvatar);
+  const studiconId = num(rawLegacy.sd ?? rawLegacy.si);
+  const profileImage = str(rawModern.profile_image);
+  const hasCustomAvatar = Boolean(rawLegacy.hasCustomAvatar || profileImage);
+  const resolvedAvatar = profileImage ?? avatarUrl({ userId, studiconId, hasCustomAvatar }, cdnUrl);
 
-  return {
+  let currentSubject: string | null = null;
+  let subjectDetails: GroupMember["subjectDetails"] = undefined;
+  if (isRecord(rawModern.current_subject)) {
+    const sId = num(rawModern.current_subject.id) ?? 0;
+    const sName = str(rawModern.current_subject.name) ?? "";
+    const sColor = str(rawModern.current_subject.color) ?? undefined;
+    currentSubject = sName;
+    subjectDetails = { id: sId, name: sName, color: sColor };
+  } else if (typeof rawModern.current_subject === "string") {
+    currentSubject = str(rawModern.current_subject);
+  } else {
+    currentSubject = str(dl.sn) ?? str(dl.sb) ?? str(dl.tt);
+  }
+
+  const member: GroupMember = {
     userId,
-    nickname: str(raw.n) ?? "",
-    category: str(raw.ct),
+    nickname: str(rawModern.nickname ?? rawLegacy.n) ?? "",
+    category: str(rawLegacy.ct),
     isStudying,
     isPaused,
-    currentSubject: str(dl.sn) ?? str(dl.sb) ?? str(dl.tt),
+    currentSubject,
     studyDate: str(dl.dt),
     lastActiveDate: str(dl.dd),
     todayStudyMs,
@@ -157,8 +268,20 @@ export function mapMember(
     sessionElapsedMs,
     studiconId,
     hasCustomAvatar,
-    avatarUrl: avatarUrl({ userId, studiconId, hasCustomAvatar }, cdnUrl),
+    avatarUrl: resolvedAvatar,
   };
+
+  if (subjectDetails) member.subjectDetails = subjectDetails;
+  if (rawModern.role) member.role = str(rawModern.role) as GroupMemberRole;
+  if (rawModern.state_icon) member.stateIcon = str(rawModern.state_icon) ?? undefined;
+  if (profileImage) member.profileImage = profileImage;
+  if (typeof rawModern.has_active_cam === "boolean") member.hasActiveCam = rawModern.has_active_cam;
+  if (rawModern.cam_snapshot_url !== undefined)
+    member.camSnapshotUrl = str(rawModern.cam_snapshot_url);
+  if (rawModern.warning_count !== undefined)
+    member.warningCount = num(rawModern.warning_count) ?? undefined;
+
+  return member;
 }
 
 export function mapMembers(
@@ -166,13 +289,81 @@ export function mapMembers(
   now: number,
   cdnUrl: string = DEFAULT_CDN_URL,
 ): GroupMember[] {
-  if (!Array.isArray(raw.ms)) return [];
+  const list = Array.isArray(raw.members) ? raw.members : Array.isArray(raw.ms) ? raw.ms : [];
   const members: GroupMember[] = [];
-  for (const item of raw.ms) {
-    const member = mapMember(item, now, cdnUrl);
+  for (const item of list) {
+    const member = mapMember(item as any, now, cdnUrl);
     if (member) members.push(member);
   }
   return members;
+}
+
+export function mapSearchGroups(raw: RawSearchGroupsResponse): SearchGroupResult[] {
+  const list = Array.isArray(raw.groups) ? raw.groups : Array.isArray(raw.list) ? raw.list : [];
+  return list
+    .map((g) => {
+      const id = num(g.id);
+      if (id === null) return null;
+      return {
+        id,
+        name: str(g.title ?? g.name) ?? "",
+        description: str(g.description),
+        category: str(g.category),
+        categoryId: num(g.category_id),
+        owner: str(g.owner),
+        memberCount: num(g.members_count ?? g.member_count) ?? 0,
+        maxCapacity: num(g.max_people_num ?? g.max_capacity) ?? 0,
+        isPrivate: Boolean(g.is_private),
+        hasCam: Boolean(g.has_cam),
+        joinType: (str(g.join_type)?.toUpperCase() === "APPROVAL" ? "APPROVAL" : "DIRECT") as
+          "DIRECT" | "APPROVAL",
+        averageStudySeconds: num(g.avg_study_seconds),
+        attendanceRate: num(g.attendance_rate),
+      };
+    })
+    .filter((g): g is SearchGroupResult => g !== null);
+}
+
+export function mapAttendances(raw: RawAttendanceResponse): GroupAttendanceResult {
+  const list = Array.isArray(raw.attendances) ? raw.attendances : [];
+  return {
+    startDate: str(raw.startDate ?? raw.start_date) ?? "",
+    endDate: str(raw.endDate ?? raw.end_date) ?? "",
+    attendances: list.map((a) => ({
+      userId: num(a.userId ?? a.user_id) ?? 0,
+      nickname: str(a.nickname) ?? "",
+      days: Array.isArray(a.days)
+        ? a.days.map((d) => ({
+            date: str(d.date) ?? "",
+            studySeconds: num(d.study_seconds) ?? 0,
+            passed: Boolean(d.passed),
+          }))
+        : [],
+      streakDays: num(a.streak) ?? undefined,
+      totalSeconds: num(a.total_seconds) ?? undefined,
+    })),
+  };
+}
+
+export function mapLeaderboard(
+  raw: RawRanksResponse,
+  fallbackType: LeaderboardType = "daily",
+): GroupLeaderboardResult {
+  const list = Array.isArray(raw.ranks) ? raw.ranks : [];
+  return {
+    type: (str(raw.type) as LeaderboardType) ?? fallbackType,
+    ranks: list.map((r, i) => {
+      const seconds = num(r.study_seconds) ?? 0;
+      return {
+        rank: num(r.rank) ?? i + 1,
+        userId: num(r.userId ?? r.user_id) ?? 0,
+        nickname: str(r.nickname) ?? "",
+        studySeconds: seconds,
+        studyTime: formatDuration(seconds * 1000),
+        profileImage: str(r.profile_image),
+      };
+    }),
+  };
 }
 
 // ---------------------------------------------------------------------------

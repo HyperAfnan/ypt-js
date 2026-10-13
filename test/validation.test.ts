@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { YptClient, YptValidationError } from "../src";
+import { YptClient, YptJs, YptValidationError } from "../src";
 import { mockFetch } from "./helpers";
 
 describe("Zod validation", () => {
+  it("exports YptClient as an alias for YptJs", () => {
+    expect(YptClient).toBe(YptJs);
+  });
+
   describe("Input validation", () => {
     it("rejects invalid email addresses in signIn", async () => {
       const { fn, calls } = mockFetch(() => ({ json: { s: true, jwt: "fake" } }));
-      const client = new YptClient({ fetch: fn });
+      const client = new YptJs({ fetch: fn });
 
       const err = await client.auth
         .signIn({ email: "invalid-email", password: "pw" })
@@ -20,7 +24,7 @@ describe("Zod validation", () => {
 
     it("rejects empty passwords in signIn", async () => {
       const { fn, calls } = mockFetch(() => ({ json: { s: true, jwt: "fake" } }));
-      const client = new YptClient({ fetch: fn });
+      const client = new YptJs({ fetch: fn });
 
       const err = await client.auth
         .signIn({ email: "valid@email.com", password: "" })
@@ -32,27 +36,73 @@ describe("Zod validation", () => {
       expect(calls).toHaveLength(0);
     });
 
-    it("rejects invalid options in YptClient constructor", () => {
+    it("rejects invalid options in YptJs constructor", () => {
       expect(() => {
-        new YptClient({ baseUrl: "not-a-url" });
+        new YptJs({ baseUrl: "not-a-url" });
       }).toThrow(YptValidationError);
 
       expect(() => {
-        new YptClient({ timeoutMs: -100 });
+        new YptJs({ timeoutMs: -100 });
       }).toThrow(YptValidationError);
 
       expect(() => {
-        new YptClient({ maxRetries: -1 });
+        new YptJs({ maxRetries: -1 });
       }).toThrow(YptValidationError);
 
       expect(() => {
-        new YptClient({ credentials: { email: "invalid", password: "pw" } });
+        new YptJs({ credentials: { email: "invalid", password: "pw" } });
       }).toThrow(YptValidationError);
+
+      expect(() => {
+        new YptJs({ authScheme: "INVALID" as any });
+      }).toThrow(YptValidationError);
+    });
+
+    it("accepts valid new options in YptJs constructor", () => {
+      const client = new YptJs({
+        token: "access-token",
+        refreshToken: "refresh-token",
+        expiresAt: 1730000000,
+        authScheme: "Bearer",
+        onSessionChange: () => {},
+      });
+      expect(client.token).toBe("access-token");
+      expect(client.refreshToken).toBe("refresh-token");
+      expect(client.expiresAt).toBe(1730000000);
+    });
+
+    it("rejects invalid inputs in socialSignUp", async () => {
+      const { fn } = mockFetch(() => ({ json: { s: true } }));
+      const client = new YptJs({ fetch: fn });
+
+      await expect(
+        client.auth.socialSignUp({
+          provider: "UNKNOWN_PROVIDER" as any,
+          token: "token",
+          nickname: "nick",
+        }),
+      ).rejects.toBeInstanceOf(YptValidationError);
+
+      await expect(
+        client.auth.socialSignUp({
+          provider: "KAKAO",
+          token: "",
+          nickname: "nick",
+        }),
+      ).rejects.toBeInstanceOf(YptValidationError);
+
+      await expect(
+        client.auth.socialSignUp({
+          provider: "GOOGLE",
+          token: "tok",
+          nickname: "",
+        }),
+      ).rejects.toBeInstanceOf(YptValidationError);
     });
 
     it("rejects non-numeric group IDs in get", async () => {
       const { fn, calls } = mockFetch(() => ({ json: { s: true, gs: [] } }));
-      const client = new YptClient({ fetch: fn, token: "tok" });
+      const client = new YptJs({ fetch: fn, token: "tok" });
 
       await expect(client.groups.get("invalid_id")).rejects.toBeInstanceOf(YptValidationError);
       expect(calls).toHaveLength(0);
@@ -60,7 +110,7 @@ describe("Zod validation", () => {
 
     it("rejects invalid concurrency in listAllMembers", async () => {
       const { fn, calls } = mockFetch(() => ({ json: { s: true, gs: [] } }));
-      const client = new YptClient({ fetch: fn, token: "tok" });
+      const client = new YptJs({ fetch: fn, token: "tok" });
 
       await expect(client.groups.listAllMembers({ concurrency: -1 })).rejects.toBeInstanceOf(
         YptValidationError,
@@ -72,7 +122,7 @@ describe("Zod validation", () => {
   describe("Upstream response validation", () => {
     it("rejects malformed API responses missing boolean success field", async () => {
       const { fn } = mockFetch(() => ({ json: { invalid: "payload without s" } }));
-      const client = new YptClient({ fetch: fn, token: "tok" });
+      const client = new YptJs({ fetch: fn, token: "tok" });
 
       const err = await client.groups.listJoined().catch((e) => e);
 
@@ -83,7 +133,7 @@ describe("Zod validation", () => {
 
     it("rejects malformed sign-in responses", async () => {
       const { fn } = mockFetch(() => ({ json: { notAnEnvelope: true } }));
-      const client = new YptClient({ fetch: fn });
+      const client = new YptJs({ fetch: fn });
 
       const err = await client.auth
         .signIn({ email: "user@example.com", password: "pw" })

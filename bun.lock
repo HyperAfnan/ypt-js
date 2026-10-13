@@ -3,7 +3,7 @@
   "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "ypt-client",
+      "name": "ypt-js",
       "dependencies": {
         "zod": "^4.6.7",
       },

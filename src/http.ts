@@ -22,16 +22,19 @@ export interface HttpClientOptions {
   maxRetries: number;
   retryDelayMs: number;
   getToken: () => string | undefined;
+  /** Authorization scheme prefix (e.g. "JWT" or "Bearer"). Default: "JWT". */
+  authScheme?: "Bearer" | "JWT";
 }
 
 export interface RequestOptions {
   query?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
   /**
-   * `token` (default): send `Authorization: JWT <token>`.
-   * `bare`: send the literal `Authorization: JWT` (used only for sign-in).
+   * `token` (default): send `Authorization: <scheme> <token>`.
+   * `bare`: send the literal `Authorization: <scheme>` (used for sign-in).
+   * `none`: omit the Authorization header completely.
    */
-  auth?: "token" | "bare";
+  auth?: "token" | "bare" | "none";
 }
 
 const MAX_RETRY_AFTER_MS = 30_000;
@@ -77,7 +80,7 @@ export class HttpClient {
       const ran = await this.runReauth();
       if (!ran || !this.opts.getToken()) {
         throw new YptAuthError(
-          "Not signed in. Call client.auth.signIn(), or pass a token or credentials to YptClient.",
+          "Not signed in. Call client.auth.signIn(), or pass a token or credentials to YptJs.",
         );
       }
     }
@@ -135,14 +138,23 @@ export class HttpClient {
     return url.toString();
   }
 
-  private buildInit(method: string, mode: "token" | "bare", body: unknown): RequestInit {
+  private buildInit(method: string, mode: "token" | "bare" | "none", body: unknown): RequestInit {
+    const scheme = this.opts.authScheme ?? "JWT";
     const token = this.opts.getToken();
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       "User-Agent": this.opts.userAgent,
-      Authorization: mode === "bare" || !token ? "JWT" : `JWT ${token}`,
       ...this.opts.headers,
     };
+
+    if (mode === "token" && token) {
+      headers["Authorization"] = `${scheme} ${token}`;
+    } else if (mode === "bare") {
+      headers["Authorization"] = scheme;
+    } else if (mode !== "none" && !token) {
+      headers["Authorization"] = scheme;
+    }
+
     const init: RequestInit = { method, headers };
     if (body !== undefined) init.body = JSON.stringify(body);
     if (this.opts.timeoutMs > 0) init.signal = AbortSignal.timeout(this.opts.timeoutMs);

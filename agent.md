@@ -1,4 +1,4 @@
-# Agent Guide for `ypt-client`
+# Agent Guide for `ypt-js`
 
 This document provides context, architecture guidelines, and operational instructions for AI agents working in this repository.
 
@@ -6,7 +6,7 @@ This document provides context, architecture guidelines, and operational instruc
 
 ## 1. Project Overview
 
-`ypt-client` is an **unofficial** TypeScript client library for the private mobile API of **Yeolpumta (YPT)**, a popular study tracking application.
+`ypt-js` is an **unofficial** TypeScript client library for the private mobile API of **Yeolpumta (YPT)**, a popular study tracking application.
 
 ### Key Objectives & Principles:
 
@@ -25,7 +25,7 @@ This document provides context, architecture guidelines, and operational instruc
 ypt-js/
 ├── src/
 │   ├── index.ts              # Public API entry point and type exports
-│   ├── client.ts             # Main YptClient orchestrator class (validates options)
+│   ├── client.ts             # Main YptJs orchestrator class (validates options)
 │   ├── http.ts               # HTTP client wrapping native fetch with retries & auth hooks
 │   ├── errors.ts             # Typed error hierarchy (YptError, YptAuthError, YptValidationError, etc.)
 │   ├── types.ts              # Upstream raw API interfaces & cleaned public types
@@ -50,10 +50,10 @@ ypt-js/
 
 ## 3. Module Breakdown
 
-### `src/client.ts` (`YptClient`)
+### `src/client.ts` (`YptJs`)
 
 - Central entry point that coordinates resources (`client.auth`, `client.groups`).
-- Validates `YptClientOptions` with Zod schema on instantiation.
+- Validates `YptJsOptions` with Zod schema on instantiation.
 - Manages session token state and optional `credentials` for lazy sign-in and transparent 401 retry.
 - Emits `onTokenChange` when tokens refresh so callers can persist tokens externally.
 - Allows injecting custom `fetch` and custom clock `now` (crucial for deterministic tests).
@@ -61,7 +61,7 @@ ypt-js/
 ### `src/schemas.ts`
 
 - Houses all Zod schemas:
-  - Input schemas: `SignInParamsSchema`, `SignInOptionsSchema`, `GroupIdSchema`, `ListAllMembersOptionsSchema`, `YptClientOptionsSchema`.
+  - Input schemas: `SignInParamsSchema`, `SignInOptionsSchema`, `GroupIdSchema`, `ListAllMembersOptionsSchema`, `YptJsOptionsSchema`.
   - Raw upstream response schemas: `RawEnvelopeSchema`, `RawSignInResponseSchema`, `RawGroupsResponseSchema`, `RawMembersResponseSchema`. Uses `.passthrough()` for upstream resilience.
 
 ### `src/http.ts` (`HttpClient`)

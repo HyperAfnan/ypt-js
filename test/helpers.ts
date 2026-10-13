@@ -34,7 +34,6 @@ export function mockFetch(handler: (call: Call, n: number) => Reply) {
   return { fn, calls };
 }
 
-// Payloads taken from the endpoint reference.
 export const SIGN_IN_OK = {
   s: true,
   jwt: "tok-1",
@@ -43,6 +42,35 @@ export const SIGN_IN_OK = {
   n: "StudentBot",
   e: "user@example.com",
   today: "2026-10-13",
+};
+
+export const SIGN_IN_MODERN_OK = {
+  accessToken: "access-token-123",
+  refreshToken: "refresh-token-456",
+  expiresAt: 1730000000,
+  user: {
+    id: 1049281,
+    email: "student@example.com",
+    nickname: "HardWorker2026",
+    status_msg: "Studying for exams",
+    profile_image: "https://picf.tgclab.com/users/avatar.jpg",
+    flames: 12,
+    tier: "GOLD",
+    created_at: "2024-03-15T08:30:00Z",
+  },
+};
+
+export const SOCIAL_SIGN_UP_OK = {
+  accessToken: "social-access-tok-789",
+  refreshToken: "social-refresh-tok-012",
+  expiresAt: 1730000000,
+  user: {
+    id: 1049282,
+    email: "user@kakao.com",
+    nickname: "StudyWarrior",
+    social_type: "KAKAO",
+    flames: 3,
+  },
 };
 
 export const GROUPS_BODY = {
