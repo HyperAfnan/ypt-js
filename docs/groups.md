@@ -1,6 +1,6 @@
 # Groups, Telemetry & Moderation
 
-[← Documentation index](./README.md)
+[← Documentation index](./overview.md)
 
 This guide covers every group operation in `ypt-js`: discovery, creation, membership,
 real-time rosters, attendance, leaderboards, moderation, and social actions.

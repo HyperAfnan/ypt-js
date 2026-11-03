@@ -1,6 +1,6 @@
 # Architecture & Internals
 
-[← Documentation index](./README.md)
+[← Documentation index](./overview.md)
 
 This document explains how `ypt-js` is structured, how a request flows through the client,
 and the invariants that keep the public API predictable. It is intended for contributors and

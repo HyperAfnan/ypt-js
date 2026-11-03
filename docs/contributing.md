@@ -1,6 +1,6 @@
 # Contributing
 
-[← Documentation index](./README.md)
+[← Documentation index](./overview.md)
 
 Thanks for improving `ypt-js`. This guide covers local setup, the test/validation
 conventions, and the release process.
@@ -228,7 +228,29 @@ credentials.
 
 ---
 
-## 11. Pull request checklist
+## 11. Documentation site
+
+The Markdown in `docs/` is also published as a VitePress site.
+
+| Command                | Description                            |
+| :--------------------- | :------------------------------------- |
+| `bun run docs:dev`     | Local dev server with hot reload       |
+| `bun run docs:build`   | Static build in `docs/.vitepress/dist` |
+| `bun run docs:preview` | Preview the production build locally   |
+
+- Landing page: `docs/index.md`
+- Site config: `docs/.vitepress/config.ts` (nav, sidebar, search, base)
+- Static assets: `docs/public/`
+- The build fails on dead internal links, so run `bun run docs:build` before pushing docs.
+
+For subpath hosting, set `DOCS_BASE` (for example `/ypt-js/`). The
+`.github/workflows/docs.yml` workflow builds and deploys to GitHub Pages on pushes to
+`main` that touch `docs/`, `package.json`, or the lockfile. Enable
+**Settings → Pages → Source: GitHub Actions** once in the repository.
+
+---
+
+## 12. Pull request checklist
 
 - [ ] Input validation added or updated.
 - [ ] Raw response schema added or updated (lenient).
@@ -236,6 +258,7 @@ credentials.
 - [ ] Tests cover request shape, mapping, and failure paths.
 - [ ] No live network calls or real user data in tests/fixtures.
 - [ ] `bun run format`, `bun run typecheck`, `bun run test`, `bun run build` pass.
+- [ ] `bun run docs:build` passes when docs changed.
 - [ ] Public types/schemas exported.
 - [ ] Docs updated.
 

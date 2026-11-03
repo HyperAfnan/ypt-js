@@ -1,6 +1,6 @@
 # API Reference
 
-[← Documentation index](./README.md)
+[← Documentation index](./overview.md)
 
 Complete reference for the public surface of `ypt-js`. Every signature below matches
 `src/index.ts` in the shipped package.

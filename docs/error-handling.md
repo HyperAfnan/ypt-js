@@ -1,6 +1,6 @@
 # Error Handling
 
-[← Documentation index](./README.md)
+[← Documentation index](./overview.md)
 
 Every failure throws a subclass of `YptError`. This guide explains exactly which class is
 thrown for which condition, what data each carries, and how to build reliable recovery.

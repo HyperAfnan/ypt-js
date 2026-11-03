@@ -1,6 +1,6 @@
 # Authentication & Session Lifecycle
 
-[← Documentation index](./README.md)
+[← Documentation index](./overview.md)
 
 YPT uses a **dual-token JWT** model. This guide explains how the client establishes a
 session, how tokens rotate, how automatic recovery works, and what you must persist.

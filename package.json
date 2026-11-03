@@ -32,6 +32,9 @@
     "test": "vitest run",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs",
     "prepublishOnly": "bun run typecheck && bun test && bun run build"
   },
   "keywords": [
@@ -46,6 +49,7 @@
     "prettier": "^3.5.3",
     "tsup": "^8.5.1",
     "typescript": "^7.0.2",
+    "vitepress": "^2.0.0-alpha.21",
     "vitest": "^5.0.4"
   },
   "dependencies": {

@@ -1,4 +1,4 @@
-# ypt-js Documentation
+# Documentation Overview
 
 An **unofficial**, reverse-engineered TypeScript client for the private mobile API of
 **Yeolpumta (YPT)** — a study-tracking app built around group accountability, live study
@@ -153,4 +153,4 @@ implemented** by this client.
 
 ## License
 
-[MIT](../LICENSE) © 2026 HyperAfnan
+[MIT](https://github.com/HyperAfnan/ypt-js/blob/main/LICENSE) © 2026 HyperAfnan

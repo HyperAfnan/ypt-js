@@ -103,9 +103,10 @@ await ypt.auth.restoreSession(savedRefreshToken);
 
 ## Detailed Documentation
 
-Comprehensive guides are available in the [`docs/`](./docs) directory:
+Comprehensive guides are available in the [`docs/`](./docs) directory, and the same content is
+published with VitePress at **<https://hyperafnan.github.io/ypt-js/>**.
 
-- [**Documentation index**](./docs/README.md): Overview, install, quick start, and the full guide map.
+- [**Documentation index**](./docs/overview.md): Overview, install, quick start, and the full guide map.
 - [**Getting started**](./docs/getting-started.md): Runtime support, every client option, and the authentication strategies.
 - [**Authentication & Session Lifecycle**](./docs/authentication.md): Email sign-in, social OAuth (`KAKAO`, `NAVER`, `GOOGLE`, `APPLE`, `FACEBOOK`), token rotation, session restore, Firebase custom tokens, push tokens, and profile management.
 - [**Groups, Discovery & Moderation**](./docs/groups.md): Search, creation, applications, live roster telemetry, attendance, leaderboards, strikes/kicks/blacklisting, nudges, chat, and notices.
@@ -225,6 +226,15 @@ bun run format
 
 # Build package (CJS + ESM + d.ts)
 bun run build
+
+# Docs development server (http://localhost:5173)
+bun run docs:dev
+
+# Build the static docs site
+bun run docs:build
+
+# Preview the built docs site
+bun run docs:preview
 ```
 
 ---
