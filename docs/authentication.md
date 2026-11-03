@@ -1,283 +1,415 @@
 # Authentication & Session Lifecycle
 
-This guide covers everything you need to know about authenticating with YPT, managing dual-token sessions, restoring sessions on application restart, integrating with Firebase, and performing user account operations.
+[← Documentation index](./README.md)
+
+YPT uses a **dual-token JWT** model. This guide explains how the client establishes a
+session, how tokens rotate, how automatic recovery works, and what you must persist.
 
 ---
 
-## Overview of Auth Architecture
+## 1. Session model
 
-The YeolPumTa (YPT) mobile client uses a **Dual-Token JWT** authentication model:
+| Token          | Purpose                                                       | Lifetime    |
+| :------------- | :------------------------------------------------------------ | :---------- |
+| `accessToken`  | Sent as `Authorization: JWT <token>` on every authorized call | Short-lived |
+| `refreshToken` | Exchanged through splash-login for a new token pair           | Long-lived  |
+| `expiresAt`    | Access-token expiry timestamp, when upstream provides it      | —           |
 
-- **Base URL**: `https://pi.tgclab.com` (Mainland China: `https://pi.pallo.cn`)
-- **Tokens**:
-  - `accessToken`: Used for every authorized API call in the `Authorization` header.
-  - `refreshToken`: Long-lived token used to rotate and obtain a fresh `accessToken` without prompting the user for credentials.
-  - `expiresAt`: Expiry epoch timestamp for the access token.
-- **Storage**: In the official app, tokens are encrypted in Android Keystore via `flutter_secure_storage`. In `ypt-js`, you can persist them using the `onTokenChange` or `onSessionChange` hooks.
+The client stores all of this **in memory only**. It never writes tokens to disk, the
+environment, or logs. Persistence is your responsibility via the change callbacks.
 
----
+```ts
+import { YptJs } from "ypt-js";
 
-## 1. Email & Password Sign-In
+const ypt = new YptJs({ token, refreshToken, expiresAt });
 
-Used when logging in with standard email and password credentials.
-
-### Method Signature
-
-```typescript
-client.auth.signIn(
-  params: SignInParams,
-  options?: SignInOptions
-): Promise<YptUser>
+ypt.accessToken; // string | undefined
+ypt.token; // string | undefined (same value; legacy alias)
+ypt.refreshToken; // string | undefined
+ypt.expiresAt; // number | undefined
+ypt.isAuthenticated; // boolean
+ypt.user; // YptUser | undefined
 ```
 
-### Parameters
+> `isAuthenticated` means "the client currently holds a token", not "the token is valid".
+> The client does not pre-empt expiry; it reacts to a `401` instead.
 
-- **`params.email`** (`string`, required): User account email address. Validated with email regex format.
-- **`params.password`** (`string`, required): Account password.
-- **`options.splash`** (`boolean`, optional, default `true`): Runs the device handshake (`POST /user/v2/splash-login`) immediately after login.
-- **`options.strictPasswordValidation`** (`boolean`, optional, default `false`): Enforces client-side password strength rules before making the request.
+---
 
-### Password Rules & Validation Helper
+## 2. Signing in with email and password
 
-YPT applies client-side password complexity rules:
+```ts
+const user = await ypt.auth.signIn(
+  { email: "student@example.com", password: "MySecurePassword123!" },
+  { splash: true, strictPasswordValidation: false },
+);
+```
 
-- Minimum 8 characters.
-- Must contain characters from at least 2 categories:
-  1. Uppercase letters (`A-Z`)
-  2. Lowercase letters (`a-z`)
-  3. Numbers (`0-9`)
-  4. Special symbols (`!@#$%^&*...`)
+### Behavior
 
-You can test passwords using the exported helper:
+1. Validates `email` (format) and `password` (non-empty). Invalid input throws
+   `YptValidationError` with `target: "input"` before any request.
+2. If `strictPasswordValidation` is `true`, applies YPT's client-side password rules.
+3. Sends `POST /user/sign-in-jwt` with the literal `Authorization: JWT` header (no token).
+4. Normalizes either the legacy or modern response shape into a `YptUser`.
+5. Stores `accessToken`, `refreshToken`, `expiresAt`, and the user on the session.
+6. Unless `splash: false`, performs a splash-login handshake and returns `YptUser`.
 
-```typescript
-import { validatePassword } from "ypt-js";
+### Request payload
 
-const result = validatePassword("mySecret123!");
-if (!result.valid) {
-  console.error("Password does not meet YPT rules:", result.reason);
+```json
+{
+  "email": "student@example.com",
+  "password": "MySecurePassword123!",
+  "loginProvider": "Email",
+  "new": true,
+  "getx": true,
+  "language": "en"
 }
 ```
 
-### Example: Email Login
+### Accepted response shapes
 
-```typescript
-import { YptJs } from "ypt-js";
+The client accepts both the legacy envelope and the modern dual-token shape:
 
-const ypt = new YptJs();
+```json
+// Legacy
+{ "s": true, "jwt": "…", "ud": 16300695, "n": "StudentBot", "e": "…", "today": "2026-10-13" }
 
-const user = await ypt.auth.signIn(
-  {
-    email: "student@example.com",
-    password: "MySecurePassword123!",
-  },
-  { strictPasswordValidation: true },
-);
-
-console.log("Logged in user:", user.nickname);
-console.log("Access Token:", ypt.token);
-console.log("Refresh Token:", ypt.refreshToken);
+// Modern
+{
+  "accessToken": "…",
+  "refreshToken": "…",
+  "expiresAt": 1730000000,
+  "user": { "id": 1049281, "nickname": "HardWorker2026", "email": "…" }
+}
 ```
 
-### Upstream Endpoint Specification
+If neither `accessToken` nor `jwt` is present, the call throws `YptApiError`.
 
-- **Endpoint**: `POST /user/sign-in-jwt`
-- **Headers**: `User-Agent: Dart/3.11 (dart:io)`, `Content-Type: application/json`
-- **Response**:
-  ```json
-  {
-    "accessToken": "eyJhbGciOiJIUzI1NiIsIn...",
-    "refreshToken": "eyJhbGciOiJIUzI1NiIsIn...",
-    "expiresAt": 1730000000,
-    "user": {
-      "id": 1049281,
-      "email": "student@example.com",
-      "nickname": "HardWorker2026",
-      "status_msg": "Studying for exams",
-      "profile_image": "https://picf.tgclab.com/users/1049281.jpg",
-      "flames": 12,
-      "tier": "GOLD",
-      "created_at": "2024-03-15T08:30:00Z"
-    }
-  }
-  ```
+> **Transactional note:** tokens are stored _before_ the splash handshake runs. If the
+> handshake fails, `signIn` rejects but the session is already authenticated. Treat the
+> thrown error as "handshake failed", not necessarily "login failed".
+
+### `strictPasswordValidation`
+
+YPT's client-side rules are:
+
+- At least 8 characters.
+- At least 2 of: uppercase, lowercase, digits, special characters.
+
+```ts
+import { validatePassword } from "ypt-js";
+
+const check = validatePassword("mySecret123!");
+// { valid: true }
+```
 
 ---
 
-## 2. Social Sign-Up & OAuth
+## 3. Social sign-up / sign-in
 
-Used when authenticating or registering for the first time using an external OAuth provider.
+```ts
+const user = await ypt.auth.socialSignUp({
+  provider: "GOOGLE",
+  token: googleIdToken,
+  nickname: "StudyWarrior",
+  operatingSystem: "android", // default
+  terms: true, // default
+  privacy: true, // default
+  ageOver14: true, // default
+});
+```
 
-### Supported Providers (`SocialProvider`)
+| Field             | Required | Notes                                                 |
+| :---------------- | :------- | :---------------------------------------------------- |
+| `provider`        | yes      | `KAKAO`, `NAVER`, `GOOGLE`, `APPLE`, `FACEBOOK`       |
+| `token`           | yes      | OAuth access token, ID token, or Apple identity token |
+| `nickname`        | yes      | Display name used if the account is created           |
+| `operatingSystem` | no       | `"android"` (default) or `"ios"`                      |
+| `terms`           | no       | Terms agreement, default `true`                       |
+| `privacy`         | no       | Privacy agreement, default `true`                     |
+| `ageOver14`       | no       | Age confirmation, default `true`                      |
 
-- `"KAKAO"` – Kakao SDK OAuth token (`KakaoFlutterSdkPlugin`)
-- `"NAVER"` – Naver Login access token (`FlutterNaverLoginPlugin`)
-- `"GOOGLE"` – Google Sign-In ID Token (`GoogleSignInPlugin`)
-- `"APPLE"` – Apple Sign-In Identity Token (`SignInWithApplePlugin`)
-- `"FACEBOOK"` – Facebook OAuth Access Token (`FlutterFacebookAuthPlugin`)
+Request: `POST /user/social/sign-up-jwt`
 
-### Sequence Flow
+```json
+{
+  "provider": "GOOGLE",
+  "token": "…",
+  "nickname": "StudyWarrior",
+  "operatingSystem": "android",
+  "terms": true,
+  "privacy": true,
+  "age_over_14": true
+}
+```
+
+The same token/splash lifecycle as email sign-in applies. If the response omits
+`social_type`, the client fills it from `provider`.
+
+---
+
+## 4. Splash login
+
+`POST /user/v2/splash-login` is YPT's device handshake. It is used to:
+
+- Announce device metadata after a fresh login.
+- Rotate an access token using a refresh token.
+- Restore a session without credentials.
+
+```ts
+// Handshake with the configured device defaults
+const result = await ypt.auth.splashLogin();
+
+// Rotate with a specific refresh token
+const rotated = await ypt.auth.splashLogin({ refreshToken: savedRefreshToken });
+
+// Override device fields
+await ypt.auth.splashLogin({ device: { timezone: "Asia/Dhaka" } });
+```
+
+### Request body
+
+```json
+{
+  "version": 810046,
+  "pushToken": "",
+  "timezone": "UTC",
+  "deviceType": "WIN",
+  "osVersion": 10,
+  "deviceModel": "Desktop",
+  "pv": 2,
+  "language": "en",
+  "refreshToken": "…"
+}
+```
+
+`refreshToken` is included when one is available on the session or passed explicitly.
+The `Authorization` header is `JWT <token>` when a token exists, otherwise the bare
+scheme (`JWT`).
+
+### Result
+
+```ts
+interface SplashLoginResult {
+  success: boolean;
+  accessToken?: string;
+  refreshToken?: string;
+  expiresAt?: number;
+}
+```
+
+If the response contains a new `accessToken`, the client updates the session and fires
+`onTokenChange` / `onSessionChange`. The returned `refreshToken` falls back to the one
+that was sent when upstream does not rotate it.
+
+> Unlike `restoreSession`, `splashLogin` **does not** throw when no token comes back. Check
+> `result.accessToken` or `ypt.isAuthenticated` if you need that guarantee.
+
+---
+
+## 5. Restoring a session
+
+Persist the refresh token from `onTokenChange` / `onSessionChange`, then restore on startup:
+
+```ts
+import { YptJs } from "ypt-js";
+
+const saved = await loadTokens(); // { accessToken?, refreshToken }
+
+const ypt = new YptJs({
+  refreshToken: saved.refreshToken,
+  onTokenChange: async (accessToken, refreshToken) => {
+    await saveTokens({ accessToken, refreshToken });
+  },
+});
+
+await ypt.auth.restoreSession(saved.refreshToken!);
+
+if (!ypt.isAuthenticated) {
+  // Fall back to interactive login.
+}
+```
+
+`restoreSession(refreshToken, device?)`:
+
+1. Rejects an empty/non-string token with `YptValidationError`.
+2. Stores the token and performs splash-login.
+3. Throws `YptAuthError` if neither the session nor the response holds an access token.
+
+Because the constructor wires recovery when `refreshToken` is supplied, you can often skip
+the explicit `restoreSession` call — the first API request will perform the handshake
+lazily. Calling it explicitly gives you a clear failure point at startup.
+
+---
+
+## 6. Automatic re-authentication
+
+The client recovers from exactly **one** `401` per request. It also signs in before the
+first request when a token is missing but credentials or a refresh token were configured.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor User
-    participant App as External App / Script
-    participant OAuth as Social SDK (Kakao/Google/Apple)
-    participant YPT as YPT Backend (pi.tgclab.com)
+    participant App
+    participant Client as YptJs
+    participant API as YPT API
 
-    User->>OAuth: Authorize login
-    OAuth-->>App: Returns OAuth Token / IdentityToken
-    App->>YPT: POST /user/social/sign-up-jwt
-    YPT-->>App: 200 OK { accessToken, refreshToken, user }
-    App->>YPT: POST /user/v2/splash-login (device handshake)
-    App->>User: Signed in successfully
+    App->>Client: groups.listJoined()
+    alt no token
+        Client->>API: splash-login (refresh token) or sign-in
+        API-->>Client: new access token
+    end
+    Client->>API: GET /group/groups/v2
+    alt HTTP 401
+        Client->>API: splash-login / sign-in (once)
+        API-->>Client: new access token
+        Client->>API: GET /group/groups/v2 (retry)
+        API-->>Client: 200 OK
+    end
+    Client-->>App: Group[]
 ```
 
-### Method Signature
+### Precedence
 
-```typescript
-client.auth.socialSignUp(
-  params: SocialSignUpParams,
-  options?: SignInOptions
-): Promise<YptUser>
-```
+1. **Refresh token rotation** — if a refresh token exists, call splash-login.
+2. **Credential sign-in** — if rotation fails or was unavailable, use `credentials`.
+3. **Fail** — throw `YptAuthError`.
 
-### Parameters
+### Guarantees and limits
 
-| Field             | Type                 | Required | Description                                               |
-| :---------------- | :------------------- | :------- | :-------------------------------------------------------- |
-| `provider`        | `SocialProvider`     | **Yes**  | `"KAKAO" \| "NAVER" \| "GOOGLE" \| "APPLE" \| "FACEBOOK"` |
-| `token`           | `string`             | **Yes**  | OAuth token, ID token, or Apple identityToken JWT.        |
-| `nickname`        | `string`             | **Yes**  | Chosen display nickname for the account.                  |
-| `operatingSystem` | `"android" \| "ios"` | No       | Client operating system (default: `"android"`).           |
-| `terms`           | `boolean`            | No       | Agreement to Terms of Service (default: `true`).          |
-| `privacy`         | `boolean`            | No       | Agreement to Privacy Policy (default: `true`).            |
-| `ageOver14`       | `boolean`            | No       | Confirmation of age 14 or older (default: `true`).        |
-
-### Example: Google Sign-Up
-
-```typescript
-import { YptJs } from "ypt-js";
-
-const ypt = new YptJs();
-
-// Authenticate using Google OAuth ID Token
-const user = await ypt.auth.socialSignUp({
-  provider: "GOOGLE",
-  token: "eyJhbGciOiJSUzI1NiIsImtpZCI6...", // Google ID Token
-  nickname: "StudyWarrior",
-  operatingSystem: "android",
-});
-
-console.log("Registered Google user:", user);
-```
+- Concurrent requests share a single in-flight recovery. Two parallel calls cannot trigger
+  two logins.
+- Only one recovery is attempted per request. A second consecutive `401` is surfaced as
+  `YptAuthError`.
+- Recovery is not attempted for sign-in/social calls themselves (`auth: "bare"`).
+- Recovery is only wired when `credentials` or `refreshToken` was passed to the
+  constructor.
+- `expiresAt` is not used to refresh proactively. If you want to refresh before expiry,
+  schedule it yourself and call `splashLogin`.
 
 ---
 
-## 3. Dual-Token JWT Lifecycle
+## 7. Persisting and updating the session
 
-### Token Properties on Client
+### Callbacks
 
-Once authenticated, the following getters are available on [`YptJs`](file:///home/afnan/Projects/ypt-js/src/client.ts):
-
-```typescript
-ypt.token; // string | undefined (accessToken)
-ypt.accessToken; // string | undefined (alias for token)
-ypt.refreshToken; // string | undefined
-ypt.expiresAt; // number | undefined (epoch timestamp)
-ypt.isAuthenticated; // boolean (true if holding a valid token)
-ypt.user; // YptUser | undefined
-```
-
-### Automatic 401 Re-Authentication Precedence
-
-When an API request encounters an `HTTP 401 Unauthorized` or expired access token:
-
-1. **Refresh Token Rotation**: If `refreshToken` is available in session, `HttpClient` automatically attempts to call `POST /user/v2/splash-login` with `refreshToken` to acquire a fresh `accessToken`.
-2. **Credential Re-Login**: If refresh token rotation fails (or was never present), but `credentials: { email, password }` were supplied during client initialization, it falls back to a fresh `POST /user/sign-in-jwt`.
-3. If neither succeeds, `YptAuthError` is thrown.
-
----
-
-## 4. Session Restore & Token Rotation
-
-When your application starts up, you can restore an existing session without re-prompting for email and password by exchanging a stored `refreshToken`.
-
-### Restoring a Stored Session
-
-```typescript
-import { YptJs } from "ypt-js";
-
-const savedRefreshToken = await loadStoredRefreshToken();
-
+```ts
 const ypt = new YptJs({
-  refreshToken: savedRefreshToken,
-  onTokenChange: (accessToken, refreshToken) => {
-    // Save rotated tokens to disk or database
-    saveTokens({ accessToken, refreshToken });
+  credentials: { email, password },
+  onTokenChange(token, refreshToken) {
+    // Called on sign-in, rotation, and manual setToken/setSession.
+  },
+  onSessionChange(session) {
+    // session: { accessToken, refreshToken?, expiresAt?, user? }
   },
 });
-
-// Explicit session restore handshake:
-await ypt.auth.restoreSession(savedRefreshToken);
-
-// Now authenticated and ready to make API calls:
-const groups = await ypt.groups.listJoined();
 ```
 
-### Method Specifications
+`onTokenChange` always receives the current access token and the current refresh token (if
+any). `onSessionChange` receives a snapshot. Both fire after the in-memory session has been
+updated.
 
-- **`client.auth.restoreSession(refreshToken, device?)`**: Restores the session with the provided refresh token. Throws `YptAuthError` if the token has expired or is invalid.
-- **`client.auth.splashLogin(params?)`**: Performs the device handshake with optional device overrides and token rotation.
+### Manual setters
+
+```ts
+ypt.setToken("new-access-token");
+ypt.setSession({ accessToken: "…", refreshToken: "…", expiresAt: 1730000000 });
+```
+
+Both setters fire the callbacks. Use them when you already manage rotation externally.
+
+### Logout caveat
+
+```ts
+await ypt.auth.logout();
+```
+
+`logout` calls `POST /user/logout` and clears the in-memory session in a `finally` block.
+That means local tokens are cleared even if the network call fails (the error still
+propagates). **The callbacks are not fired by logout** — clear your persisted copy yourself:
+
+```ts
+try {
+  await ypt.auth.logout();
+} finally {
+  await deletePersistedTokens();
+}
+```
 
 ---
 
-## 5. Downstream Integrations
+## 8. Account and profile operations
 
-### Firebase Custom Token Exchange
+```ts
+// Is this nickname taken?
+const taken = await ypt.auth.checkUsername("ExamMaster");
 
-YPT mobile uses Google Firebase (Firestore and Realtime DB) for real-time study presence and sync. YPT's backend exchanges your authenticated YPT JWT for a Firebase Custom Auth Token.
+// Rename the current user (updates ypt.user.nickname)
+await ypt.auth.updateNickname("ExamMaster2026");
 
-```typescript
+// Update the study bio (updates ypt.user.statusMsg)
+await ypt.auth.updateStatusMessage("Target: 10 hours daily");
+
+// Exchange the YPT token for a Firebase custom token
 const firebaseToken = await ypt.auth.getFirebaseCustomToken();
 
-// You can now sign into Firebase client SDKs:
-// await firebase.auth().signInWithCustomToken(firebaseToken);
+// Register an FCM/APNs device token
+await ypt.auth.registerPushToken(fcmDeviceToken);
 ```
 
-- **Endpoint**: `POST /user/firebase/custom-token`
-
-### Registering Push Tokens
-
-Registers an FCM (Firebase Cloud Messaging) or APNs push device token with YPT:
-
-```typescript
-await ypt.auth.registerPushToken("dKz9...fcm_device_token...");
-```
-
-- **Endpoint**: `POST /user/push-token`
+| Method                      | Endpoint                           | Notes                                                 |
+| :-------------------------- | :--------------------------------- | :---------------------------------------------------- |
+| `checkUsername(nickname)`   | `POST /user/exist-username`        | Returns `boolean` from `exist` / `isExist`            |
+| `updateNickname(nickname)`  | `POST /user/nickname/change`       | Trims input; updates `client.user` on success         |
+| `updateStatusMessage(text)` | `POST /user/status_msg/change`     | Sends both `status_msg` and `statusMsg` keys          |
+| `getFirebaseCustomToken()`  | `POST /user/firebase/custom-token` | Returns `token \| customToken \| firebaseCustomToken` |
+| `registerPushToken(token)`  | `POST /user/push-token`            | Sends `{ token, pushToken }`                          |
+| `logout()`                  | `POST /user/logout`                | Always clears local session                           |
 
 ---
 
-## 6. Account & Profile Management
+## 9. Auth error codes
 
-The `auth` resource provides several convenience methods for managing the current user account:
+YPT returns errors inside its JSON envelope: `{ "s": false, "c": <code>, "m": "<message>" }`.
+The client maps the known auth codes to `YptAuthError`:
 
-```typescript
-// 1. Check if a nickname is already registered:
-const isTaken = await ypt.auth.checkUsername("ExamMaster");
-console.log("Username taken:", isTaken);
+| Code  | Meaning (reverse-engineered) |
+| :---- | :--------------------------- |
+| `112` | Incorrect password           |
+| `113` | Unknown email / account      |
+| `114` | Suspended or blocked account |
 
-// 2. Change your display nickname:
-await ypt.auth.updateNickname("ExamMaster2026");
-console.log("New nickname:", ypt.user?.nickname);
+`AUTH_ERROR_CODES` is exported if you want to branch on codes yourself:
 
-// 3. Update status message (study bio):
-await ypt.auth.updateStatusMessage("Target: 10 hours daily!");
-console.log("New status:", ypt.user?.statusMsg);
-
-// 4. Logout (invalidates session on backend and clears in-memory tokens):
-await ypt.auth.logout();
-console.log("Authenticated:", ypt.isAuthenticated); // false
+```ts
+import { AUTH_ERROR_CODES } from "ypt-js";
+AUTH_ERROR_CODES.has(112); // true
 ```
+
+Any `HTTP 401` is also surfaced as `YptAuthError`, regardless of envelope contents.
+Other envelope errors become `YptApiError` (with `code`), and non-2xx responses without an
+envelope become `YptHttpError`.
+
+---
+
+## 10. Security checklist
+
+- Store credentials in a secrets manager or environment variables, never in source.
+- Persist refresh tokens encrypted at rest; rotate them when `onTokenChange` provides a new
+  value.
+- Never log `client.token`, `refreshToken`, `expiresAt`, or the raw request bodies.
+- Use a custom `fetch` to add observability, but redact the `Authorization` header.
+- `credentials` is kept in memory for the lifetime of the client; construct the client per
+  user/session and let it be garbage-collected.
+- This is an unofficial client. Do not use it to access accounts or data you do not own.
+
+---
+
+## Related
+
+- [Getting started](./getting-started.md)
+- [Groups & telemetry](./groups.md)
+- [Error handling](./error-handling.md)
+- [API reference → AuthResource](./api-reference.md#3-authresource-clientauth)

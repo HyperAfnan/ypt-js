@@ -86,15 +86,17 @@ const groups = await ypt.groups.listJoined();
 Pass a persisted refresh token to restore sessions across restarts:
 
 ```typescript
+const savedRefreshToken = await loadSavedRefreshToken();
+
 const ypt = new YptJs({
-  refreshToken: await loadSavedRefreshToken(),
-  onTokenChange: async (token, refreshToken) => {
-    await saveTokens({ token, refreshToken });
+  refreshToken: savedRefreshToken,
+  onTokenChange: async (accessToken, refreshToken) => {
+    await saveTokens({ accessToken, refreshToken });
   },
 });
 
-// Restore session from refresh token
-await ypt.auth.restoreSession(await loadSavedRefreshToken());
+// Optional explicit restore (the first request would also do this lazily)
+await ypt.auth.restoreSession(savedRefreshToken);
 ```
 
 ---
@@ -103,9 +105,17 @@ await ypt.auth.restoreSession(await loadSavedRefreshToken());
 
 Comprehensive guides are available in the [`docs/`](./docs) directory:
 
-- [**Authentication & Session Lifecycle**](./docs/authentication.md): Email sign-in, Social OAuth (`KAKAO`, `NAVER`, `GOOGLE`, `APPLE`, `FACEBOOK`), Firebase Custom Tokens, Push Tokens, and Profile management.
-- [**Groups, Discovery & Moderation**](./docs/groups.md): Group search & discovery, title validation & creation, applications & screening questions, live roster telemetry, attendance tracking, leaderboards, member strikes/kicking/blacklisting, and social nudges & chat.
-- [**API Reference**](./docs/api-reference.md): Detailed parameter schemas, method signatures, return types, and error handling hierarchy.
+- [**Documentation index**](./docs/README.md): Overview, install, quick start, and the full guide map.
+- [**Getting started**](./docs/getting-started.md): Runtime support, every client option, and the authentication strategies.
+- [**Authentication & Session Lifecycle**](./docs/authentication.md): Email sign-in, social OAuth (`KAKAO`, `NAVER`, `GOOGLE`, `APPLE`, `FACEBOOK`), token rotation, session restore, Firebase custom tokens, push tokens, and profile management.
+- [**Groups, Discovery & Moderation**](./docs/groups.md): Search, creation, applications, live roster telemetry, attendance, leaderboards, strikes/kicks/blacklisting, nudges, chat, and notices.
+- [**API Reference**](./docs/api-reference.md): Complete signatures, options, types, schemas, exports, and endpoint mapping.
+- [**Error Handling**](./docs/error-handling.md): Error hierarchy, retry semantics, and recovery patterns.
+- [**Architecture**](./docs/architecture.md): Internals, request lifecycle, mapping pipeline, and design invariants.
+- [**Cookbook**](./docs/cookbook.md): Production recipes for persistence, polling, proxying, and batch work.
+- [**Troubleshooting**](./docs/troubleshooting.md): Symptom-based debugging and FAQ.
+- [**Upstream API**](./docs/upstream-api.md): Reverse-engineered wire protocol and minified-key glossary.
+- [**Contributing**](./docs/contributing.md): Development workflow, testing conventions, and release process.
 
 ---
 
@@ -144,7 +154,7 @@ Comprehensive guides are available in the [`docs/`](./docs) directory:
 - `listBlacklist(groupId)`: Lists all blacklisted users for a group.
 - `getMembers(groupId, options?)`: Retrieves members of a group with real-time live study calculations and active cams.
 - `getAttendances(groupId, startDate, endDate)`: Fetches attendance compliance matrix and daily study records.
-- `getLeaderboard(groupId, type)`: Retrieves group study rankings by day, week, month, or total.
+- `getLeaderboard(groupId, type?)`: Retrieves group study rankings (`"daily" | "weekly" | "monthly"`, default `"daily"`).
 - `nudge(groupId, targetUserId)`: Sends an in-app vibration nudge to an individual inactive student.
 - `nudgeAll(groupId)`: Sends a vibration nudge to all inactive members in a group.
 - `sendChatMessage(groupId, message, options?)`: Sends a message to the group chat room.
@@ -153,9 +163,9 @@ Comprehensive guides are available in the [`docs/`](./docs) directory:
 
 ### Helpers & Utilities
 
-- `avatarUrl(path)`: Resolves full avatar URL from CDN.
+- `avatarUrl(member, cdnUrl?)`: Resolves a member's avatar URL from the CDN.
 - `formatDuration(ms)`: Formats study duration into human-readable strings (`HH:MM:SS`).
-- `mergeMembers(lists)`: Deduplicates and merges member records across groups.
+- `mergeMembers(entries)`: Deduplicates and merges member records across groups.
 - `validatePassword(password)`: Validates password against YPT's 8-character 2-category rule.
 
 ---
@@ -164,16 +174,35 @@ Comprehensive guides are available in the [`docs/`](./docs) directory:
 
 ```typescript
 const ypt = new YptJs({
-  token?: string,
-  credentials?: { email: string; password: string },
-  onTokenChange?: (token: string | null) => void,
-  baseUrl?: string,          // Default: "https://pi.tgclab.com"
-  cdnUrl?: string,          // Default: "https://alicdn.tgclab.com"
-  timeoutMs?: number,       // Default: 15000
-  maxRetries?: number,      // Default: 2 (for GET requests)
-  retryDelayMs?: number,    // Default: 500
+  // Session (use one of token / refreshToken / credentials)
+  token,
+  refreshToken,
+  expiresAt,
+  credentials: { email, password },
+
+  // Observability / persistence hooks
+  onTokenChange: (accessToken, refreshToken) => {},
+  onSessionChange: (session) => {},
+
+  // Transport
+  authScheme: "JWT", // or "Bearer"
+  baseUrl: "https://pi.tgclab.com",
+  cdnUrl: "https://alicdn.tgclab.com",
+  userAgent: "Dart/3.11 (dart:io)",
+  headers: {},
+  timeoutMs: 15_000, // 0 disables
+  maxRetries: 2, // GET requests only
+  retryDelayMs: 500,
+  language: "en",
+  device: {}, // splash-login device overrides
+
+  // Test seams
+  fetch: globalThis.fetch,
+  now: Date.now,
 });
 ```
+
+See [Getting started → Complete options reference](./docs/getting-started.md#complete-options-reference) for types and defaults.
 
 _(Note: `YptClient` is also exported as an alias for `YptJs` for backward compatibility)._
 
@@ -188,8 +217,8 @@ bun install
 # Type-check
 bun run typecheck
 
-# Run tests
-bun test
+# Run the test suite (Vitest)
+bun run test
 
 # Format code
 bun run format
