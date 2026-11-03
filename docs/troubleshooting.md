@@ -1,6 +1,6 @@
 # Troubleshooting & FAQ
 
-[← Documentation index](./README.md)
+[← Documentation index](./overview.md)
 
 Symptom-first debugging guide. Each entry lists the likely cause and the concrete fix.
 

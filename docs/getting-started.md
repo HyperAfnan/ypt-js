@@ -1,6 +1,6 @@
 # Getting Started
 
-[← Documentation index](./README.md)
+[← Documentation index](./overview.md)
 
 This guide takes you from installation to a working, authenticated client. It covers runtime
 support, every constructor option, and the three supported ways to establish a session.

@@ -1,6 +1,6 @@
 # Upstream API (Reverse-Engineered)
 
-[← Documentation index](./README.md)
+[← Documentation index](./overview.md)
 
 This document describes the wire protocol the client targets. It is derived from observing
 the YPT mobile client and is **not** official documentation. Endpoints, keys, and semantics

@@ -1,6 +1,6 @@
 # Cookbook
 
-[← Documentation index](./README.md)
+[← Documentation index](./overview.md)
 
 Copy-paste recipes for common production tasks. Examples assume Node.js 18+ unless noted.
 Adapt storage, logging, and scheduling to your environment.
