@@ -1,260 +1,523 @@
 # API Reference
 
-Complete API documentation for **`ypt-js`**.
+[← Documentation index](./README.md)
+
+Complete reference for the public surface of `ypt-js`. Every signature below matches
+`src/index.ts` in the shipped package.
+
+- [Entry points & exports](#1-entry-points--exports)
+- [`YptJs` client](#2-yptjs-client)
+- [`AuthResource` (`client.auth`)](#3-authresource-clientauth)
+- [`GroupsResource` (`client.groups`)](#4-groupsresource-clientgroups)
+- [Types](#5-types)
+- [Utilities](#6-utilities)
+- [Validation schemas](#7-validation-schemas)
+- [Errors](#8-errors)
+- [HTTP & retry semantics](#9-http--retry-semantics)
 
 ---
 
-## Table of Contents
+## 1. Entry points & exports
 
-- [YptJs Client](#yptjs-client)
-  - [Constructor Options (`YptJsOptions`)](#constructor-options-yptjsoptions)
-  - [Properties & Getters](#properties--getters)
-  - [Methods](#methods)
-- [AuthResource (`client.auth`)](#authresource)
-- [GroupsResource (`client.groups`)](#groupsresource)
-- [Types & Data Models](#types--data-models)
-- [Error Handling](#error-handling)
-
----
-
-## YptJs Client
-
-```typescript
-import { YptJs, YptClient } from "ypt-js";
-
-// YptClient is an identical alias for YptJs
-const client = new YptJs(options);
+```ts
+import {
+  YptJs,
+  YptClient, // identical alias of YptJs
+  YptError,
+  YptApiError,
+  YptAuthError,
+  YptHttpError,
+  YptNetworkError,
+  YptValidationError,
+  AUTH_ERROR_CODES,
+  avatarUrl,
+  formatDuration,
+  mergeMembers,
+  validatePassword,
+  mapUser,
+  mapGroups,
+  mapMembers,
+  mapMember,
+  mapSearchGroups,
+  mapAttendances,
+  mapLeaderboard,
+} from "ypt-js";
 ```
 
-### Constructor Options (`YptJsOptions`)
+Type-only exports are listed in [Types](#5-types). All Zod schemas are exported as values —
+see [Validation schemas](#7-validation-schemas).
 
-| Option            | Type                                             | Default                       | Description                                                         |
-| :---------------- | :----------------------------------------------- | :---------------------------- | :------------------------------------------------------------------ |
-| `token`           | `string`                                         | `undefined`                   | Pre-existing JWT or `accessToken`.                                  |
-| `refreshToken`    | `string`                                         | `undefined`                   | Long-lived refresh token for session restoration and auto-rotation. |
-| `expiresAt`       | `number`                                         | `undefined`                   | Epoch timestamp of access token expiry.                             |
-| `credentials`     | `SignInParams`                                   | `undefined`                   | Email and password for lazy sign-in and 401 re-login.               |
-| `onTokenChange`   | `(token: string, refreshToken?: string) => void` | `undefined`                   | Fired whenever tokens change or rotate.                             |
-| `onSessionChange` | `(session: SessionInfo) => void`                 | `undefined`                   | Fired with full session object on updates.                          |
-| `authScheme`      | `"JWT" \| "Bearer"`                              | `"JWT"`                       | HTTP `Authorization` header prefix.                                 |
-| `baseUrl`         | `string`                                         | `"https://pi.tgclab.com"`     | API gateway host.                                                   |
-| `cdnUrl`          | `string`                                         | `"https://alicdn.tgclab.com"` | Static asset CDN base.                                              |
-| `userAgent`       | `string`                                         | `"Dart/3.11 (dart:io)"`       | User-Agent string sent to upstream API.                             |
-| `timeoutMs`       | `number`                                         | `15000`                       | Request timeout in milliseconds (0 to disable).                     |
-| `maxRetries`      | `number`                                         | `2`                           | Max automatic retries for idempotent GET requests.                  |
-| `retryDelayMs`    | `number`                                         | `500`                         | Base exponential backoff delay in ms.                               |
-| `language`        | `string`                                         | `"en"`                        | Language code sent in request payloads.                             |
-| `fetch`           | `FetchLike`                                      | `globalThis.fetch`            | Custom fetch implementation for proxies or mocking.                 |
-| `now`             | `() => number`                                   | `Date.now`                    | Clock implementation for live study calculations.                   |
+---
 
-### Properties & Getters
+## 2. `YptJs` client
 
-- **`client.token`**: `string | undefined` – Current access token / JWT.
-- **`client.accessToken`**: `string | undefined` – Alias for `token`.
-- **`client.refreshToken`**: `string | undefined` – Current refresh token.
-- **`client.expiresAt`**: `number | undefined` – Expiry epoch timestamp.
-- **`client.isAuthenticated`**: `boolean` – `true` if client currently holds a token.
-- **`client.user`**: `YptUser | undefined` – Current user profile data.
-- **`client.auth`**: `AuthResource` – Authentication and account management instance.
-- **`client.groups`**: `GroupsResource` – Study groups and leaderboard instance.
+```ts
+class YptJs {
+  constructor(options?: YptJsOptions);
+
+  readonly auth: AuthResource;
+  readonly groups: GroupsResource;
+
+  get token(): string | undefined;
+  get accessToken(): string | undefined;
+  get refreshToken(): string | undefined;
+  get expiresAt(): number | undefined;
+  get isAuthenticated(): boolean;
+  get user(): YptUser | undefined;
+
+  setToken(token: string): void;
+  setSession(tokens: { accessToken: string; refreshToken?: string; expiresAt?: number }): void;
+}
+```
+
+The constructor validates `options` with Zod and throws `YptValidationError` on invalid
+values (bad URL, negative timeout, invalid credentials, unsupported `authScheme`, …). It
+performs no network I/O.
+
+### `YptJsOptions`
+
+| Option            | Type                                             | Default                       | Description                                           |
+| :---------------- | :----------------------------------------------- | :---------------------------- | :---------------------------------------------------- |
+| `token`           | `string`                                         | —                             | Existing access token/JWT.                            |
+| `refreshToken`    | `string`                                         | —                             | Refresh token for rotation and restore.               |
+| `expiresAt`       | `number`                                         | —                             | Expiry timestamp (stored, not enforced).              |
+| `credentials`     | `{ email: string; password: string }`            | —                             | Enables lazy sign-in and 401 recovery.                |
+| `onTokenChange`   | `(token: string, refreshToken?: string) => void` | —                             | Fired whenever the access token changes.              |
+| `onSessionChange` | `(session: SessionInfo) => void`                 | —                             | Fired with a full session snapshot.                   |
+| `authScheme`      | `"JWT" \| "Bearer"`                              | `"JWT"`                       | Authorization header scheme.                          |
+| `baseUrl`         | `string`                                         | `"https://pi.tgclab.com"`     | API base URL.                                         |
+| `cdnUrl`          | `string`                                         | `"https://alicdn.tgclab.com"` | CDN base for avatars.                                 |
+| `userAgent`       | `string`                                         | `"Dart/3.11 (dart:io)"`       | `User-Agent` header.                                  |
+| `headers`         | `Record<string, string>`                         | `{}`                          | Extra headers, merged last.                           |
+| `timeoutMs`       | `number`                                         | `15000`                       | Request timeout; `0` disables.                        |
+| `maxRetries`      | `number`                                         | `2`                           | Extra `GET` attempts on network/`429`/`5xx` failures. |
+| `retryDelayMs`    | `number`                                         | `500`                         | Backoff base.                                         |
+| `language`        | `string`                                         | `"en"`                        | `language` sent to YPT.                               |
+| `device`          | `Partial<SplashDevice>`                          | see below                     | Splash-login device overrides.                        |
+| `fetch`           | `FetchLike`                                      | `globalThis.fetch`            | Custom fetch implementation.                          |
+| `now`             | `() => number`                                   | `Date.now`                    | Clock for live study math.                            |
+
+`YptClientOptions` is an alias of `YptJsOptions`. `YptClient` is an alias of `YptJs`.
+
+### Getters
+
+| Getter            | Returns                | Notes                                  |
+| :---------------- | :--------------------- | :------------------------------------- |
+| `token`           | `string \| undefined`  | Legacy alias of the access token.      |
+| `accessToken`     | `string \| undefined`  | Current access token.                  |
+| `refreshToken`    | `string \| undefined`  | Current refresh token.                 |
+| `expiresAt`       | `number \| undefined`  | Last known expiry.                     |
+| `isAuthenticated` | `boolean`              | True when any token is held.           |
+| `user`            | `YptUser \| undefined` | Set by sign-in/social/restore mapping. |
 
 ### Methods
 
-- **`client.setToken(token: string): void`**: Manually sets the access token and triggers notification callbacks.
-- **`client.setSession(tokens: { accessToken: string; refreshToken?: string; expiresAt?: number }): void`**: Sets full token state and notifies callbacks.
+| Method          | Behavior                                                                         |
+| :-------------- | :------------------------------------------------------------------------------- |
+| `setToken(t)`   | Sets the access token, then fires `onTokenChange` and `onSessionChange`.         |
+| `setSession(s)` | Sets access token plus optional refresh token/expiry, then fires both callbacks. |
+
+Both methods do not validate the token format and do not perform network calls.
+
+### `SessionInfo`
+
+```ts
+interface SessionInfo {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt?: number;
+  user?: YptUser;
+}
+```
 
 ---
 
-## AuthResource
+## 3. `AuthResource` (`client.auth`)
 
-Accessible via `client.auth`.
+```ts
+class AuthResource {
+  signIn(params: SignInParams, options?: SignInOptions): Promise<YptUser>;
+  socialSignUp(params: SocialSignUpParams, options?: SignInOptions): Promise<YptUser>;
+  splashLogin(params?: SplashLoginParams | Partial<SplashDevice>): Promise<SplashLoginResult>;
+  restoreSession(refreshToken: string, device?: Partial<SplashDevice>): Promise<SplashLoginResult>;
+  getFirebaseCustomToken(): Promise<string>;
+  registerPushToken(token: string): Promise<void>;
+  logout(): Promise<void>;
+  checkUsername(nickname: string): Promise<boolean>;
+  updateNickname(nickname: string): Promise<void>;
+  updateStatusMessage(statusMsg: string): Promise<void>;
+}
+```
 
-### `signIn(params, options?): Promise<YptUser>`
+### `signIn`
 
-Authenticates with email and password via `POST /user/sign-in-jwt`.
+```ts
+signIn(
+  params: { email: string; password: string },
+  options?: { splash?: boolean; strictPasswordValidation?: boolean },
+): Promise<YptUser>
+```
 
-```typescript
-const user = await client.auth.signIn(
-  {
-    email: "user@example.com",
-    password: "password123!",
-  },
-  {
-    splash: true,
-    strictPasswordValidation: false,
-  },
+- **Endpoint:** `POST /user/sign-in-jwt`, `Authorization: JWT` (bare).
+- **Defaults:** `splash: true`, `strictPasswordValidation: false`.
+- **Validates:** email format; non-empty password; optional password rules.
+- **Stores:** access token, refresh token, expiry, mapped user.
+- **Throws:** `YptValidationError` (input), `YptAuthError` (codes 112/113/114 or 401),
+  `YptApiError` (other envelope errors or a missing token), `YptHttpError`,
+  `YptNetworkError`.
+
+```ts
+const user = await ypt.auth.signIn(
+  { email: "user@example.com", password: "Secret123!" },
+  { strictPasswordValidation: true },
 );
 ```
 
-### `socialSignUp(params, options?): Promise<YptUser>`
+### `socialSignUp`
 
-Registers or authenticates using an OAuth social provider via `POST /user/social/sign-up-jwt`.
-
-```typescript
-const user = await client.auth.socialSignUp({
-  provider: "KAKAO",
-  token: "oauth_access_token",
-  nickname: "StudyWarrior",
-  operatingSystem: "android",
-});
+```ts
+socialSignUp(
+  params: {
+    provider: "KAKAO" | "NAVER" | "GOOGLE" | "APPLE" | "FACEBOOK";
+    token: string;
+    nickname: string;
+    operatingSystem?: "android" | "ios";
+    terms?: boolean;
+    privacy?: boolean;
+    ageOver14?: boolean;
+  },
+  options?: { splash?: boolean; strictPasswordValidation?: boolean },
+): Promise<YptUser>
 ```
 
-### `splashLogin(params?): Promise<SplashLoginResult>`
+- **Endpoint:** `POST /user/social/sign-up-jwt`, bare auth.
+- **Defaults:** `operatingSystem: "android"`, `terms/privacy/ageOver14: true`, `splash: true`.
+- **Body keys:** `provider`, `token`, `nickname`, `operatingSystem`, `terms`, `privacy`,
+  `age_over_14`.
+- Fills `user.socialType` from `provider` when the response omits it.
 
-Sends the device startup handshake via `POST /user/v2/splash-login`. Can rotate tokens when a refresh token is supplied.
+### `splashLogin`
 
-```typescript
-const result = await client.auth.splashLogin({
-  refreshToken: "refresh_token",
-});
+```ts
+splashLogin(
+  params?: { refreshToken?: string; device?: Partial<SplashDevice> } | Partial<SplashDevice>,
+): Promise<SplashLoginResult>
 ```
 
-### `restoreSession(refreshToken, device?): Promise<SplashLoginResult>`
+- **Endpoint:** `POST /user/v2/splash-login`.
+- **Auth:** `JWT <token>` when a token exists, otherwise bare `JWT`.
+- **Body:** device defaults merged with overrides, `language`, and `refreshToken` when
+  available.
+- **Side effect:** stores a returned `accessToken` and rotates `refreshToken`.
+- **Does not throw** when no token is returned.
 
-Restores session and acquires fresh tokens using a persisted refresh token.
-
-```typescript
-await client.auth.restoreSession(savedRefreshToken);
+```ts
+interface SplashLoginResult {
+  success: boolean;
+  accessToken?: string;
+  refreshToken?: string;
+  expiresAt?: number;
+}
 ```
 
-### `getFirebaseCustomToken(): Promise<string>`
+### `restoreSession`
 
-Exchanges the YPT access token for a Google Firebase Custom Auth Token via `POST /user/firebase/custom-token`.
+```ts
+restoreSession(refreshToken: string, device?: Partial<SplashDevice>): Promise<SplashLoginResult>
+```
 
-### `registerPushToken(token: string): Promise<void>`
+- Validates `refreshToken` is a non-empty string (`YptValidationError` otherwise).
+- Stores it and calls `splashLogin({ refreshToken, device })`.
+- Throws `YptAuthError` if no access token is obtained.
 
-Registers an FCM/APNs push notification device token via `POST /user/push-token`.
+### `getFirebaseCustomToken`
 
-### `logout(): Promise<void>`
+```ts
+getFirebaseCustomToken(): Promise<string>
+```
 
-Calls `POST /user/logout` and clears in-memory session tokens.
+- **Endpoint:** `POST /user/firebase/custom-token` (authenticated).
+- Returns the first non-empty of `token`, `customToken`, `firebaseCustomToken`.
+- Throws `YptApiError` when none is present, or `YptValidationError` for a malformed body.
 
-### `checkUsername(nickname: string): Promise<boolean>`
+### `registerPushToken`
 
-Checks if a nickname is already taken via `POST /user/exist-username`.
+```ts
+registerPushToken(token: string): Promise<void>
+```
 
-### `updateNickname(nickname: string): Promise<void>`
+- **Endpoint:** `POST /user/push-token`.
+- **Body:** `{ token, pushToken }`.
+- Rejects empty/non-string input with `YptValidationError`.
 
-Changes display nickname via `POST /user/nickname/change`.
+### `logout`
 
-### `updateStatusMessage(statusMsg: string): Promise<void>`
+```ts
+logout(): Promise<void>
+```
 
-Updates the status message / bio via `POST /user/status_msg/change`.
+- Calls `POST /user/logout`, then clears access token, refresh token, expiry, and user in a
+  `finally` block.
+- Local state is cleared even if the request fails.
+- Does **not** fire `onTokenChange` / `onSessionChange`; clear persisted tokens yourself.
+
+### `checkUsername`
+
+```ts
+checkUsername(nickname: string): Promise<boolean>
+```
+
+- **Endpoint:** `POST /user/exist-username`.
+- Returns `Boolean(exist ?? isExist)`.
+- Rejects empty input with `YptValidationError`.
+
+### `updateNickname`
+
+```ts
+updateNickname(nickname: string): Promise<void>
+```
+
+- **Endpoint:** `POST /user/nickname/change`.
+- Trims the input; updates `client.user.nickname` on success.
+
+### `updateStatusMessage`
+
+```ts
+updateStatusMessage(statusMsg: string): Promise<void>
+```
+
+- **Endpoint:** `POST /user/status_msg/change`.
+- Sends both `status_msg` and `statusMsg`; updates `client.user.statusMsg` on success.
 
 ---
 
-## GroupsResource
+## 4. `GroupsResource` (`client.groups`)
 
-Accessible via `client.groups`. See [Groups Guide](./groups.md) for full workflows.
+```ts
+class GroupsResource {
+  search(options: SearchGroupsOptions): Promise<SearchGroupResult[]>;
+  listJoined(): Promise<Group[]>;
+  get(groupId: number | string): Promise<Group | null>;
+  searchJoined(query: string): Promise<Group[]>;
+  validateTitle(title: string): Promise<ValidateTitleResult>;
+  create(params: CreateGroupParams): Promise<{ id: number; title: string }>;
+  join(groupId: number | string, options?: JoinGroupOptions): Promise<void>;
+  apply(groupId: number | string, params: ApplyGroupParams): Promise<void>;
+  reviewApplicant(groupId: number | string, params: ReviewApplicantParams): Promise<void>;
+  leave(groupId: number | string, userId?: number): Promise<void>;
+  warnMember(groupId: number | string, userId: number): Promise<void>;
+  cancelWarning(groupId: number | string, userId: number): Promise<void>;
+  kickMember(groupId: number | string, userId: number): Promise<void>;
+  blacklistMember(groupId: number | string, userId: number): Promise<void>;
+  removeBlacklist(groupId: number | string, userId: number): Promise<void>;
+  listBlacklist(groupId: number | string): Promise<BlacklistUser[]>;
+  getMembers(groupId: number | string, options?: GetMembersOptions): Promise<GroupMember[]>;
+  getAttendances(
+    groupId: number | string,
+    startDate: string,
+    endDate: string,
+  ): Promise<GroupAttendanceResult>;
+  getLeaderboard(groupId: number | string, type?: LeaderboardType): Promise<GroupLeaderboardResult>;
+  nudge(groupId: number | string, targetUserId: number): Promise<void>;
+  nudgeAll(groupId: number | string): Promise<void>;
+  sendChatMessage(
+    groupId: number | string,
+    message: string,
+    options?: SendChatOptions,
+  ): Promise<void>;
+  postNotice(groupId: number | string, content: string, options?: PostNoticeOptions): Promise<void>;
+  listAllMembers(options?: ListAllMembersOptions): Promise<UnifiedMembersResult>;
+}
+```
 
-### `search(options: SearchGroupsOptions): Promise<SearchGroupResult[]>`
+`groupId` accepts a positive integer or a numeric string. Non-numeric strings throw
+`YptValidationError` before any request.
 
-Searches public groups by keyword and filter criteria (`GET /group/list/search-2`).
+### Method summary
 
-### `listJoined(): Promise<Group[]>`
+| Method                                        | Endpoint                                        | Returns                  |
+| :-------------------------------------------- | :---------------------------------------------- | :----------------------- |
+| `search(options)`                             | `GET /group/list/search-2`                      | `SearchGroupResult[]`    |
+| `listJoined()`                                | `GET /group/groups/v2`                          | `Group[]`                |
+| `get(groupId)`                                | `GET /group/groups/v2`                          | `Group \| null`          |
+| `searchJoined(query)`                         | `GET /group/groups/v2`                          | `Group[]`                |
+| `validateTitle(title)`                        | `POST /group/make/title/validate`               | `ValidateTitleResult`    |
+| `create(params)`                              | `POST /group/make/v2`                           | `{ id, title }`          |
+| `join(groupId, options?)`                     | `POST /group/join/v2`                           | `void`                   |
+| `apply(groupId, params)`                      | `POST /group/group-user/join-info`              | `void`                   |
+| `reviewApplicant(groupId, params)`            | `POST /group/group-user/join/approve-or-reject` | `void`                   |
+| `leave(groupId, userId?)`                     | `POST /group/leave`                             | `void`                   |
+| `warnMember(groupId, userId)`                 | `POST /group/warn`                              | `void`                   |
+| `cancelWarning(groupId, userId)`              | `POST /group/warn/cancel`                       | `void`                   |
+| `kickMember(groupId, userId)`                 | `POST /group/kick-out`                          | `void`                   |
+| `blacklistMember(groupId, userId)`            | `POST /group/black/add`                         | `void`                   |
+| `removeBlacklist(groupId, userId)`            | `POST /group/black/delete`                      | `void`                   |
+| `listBlacklist(groupId)`                      | `GET /group/black/all`                          | `BlacklistUser[]`        |
+| `getMembers(groupId, options?)`               | `GET /logs/group/members/v2`                    | `GroupMember[]`          |
+| `getAttendances(groupId, start, end)`         | `GET /logs/v70701/group/attendances`            | `GroupAttendanceResult`  |
+| `getLeaderboard(groupId, type?)`              | `GET /logs/group/member/ranks`                  | `GroupLeaderboardResult` |
+| `nudge(groupId, targetUserId)`                | `POST /group/push/shake`                        | `void`                   |
+| `nudgeAll(groupId)`                           | `POST /group/push/shake/all`                    | `void`                   |
+| `sendChatMessage(groupId, message, options?)` | `POST /group/chat`                              | `void`                   |
+| `postNotice(groupId, content, options?)`      | `POST /group/notice`                            | `void`                   |
+| `listAllMembers(options?)`                    | `GET /group/groups/v2` + per-group members      | `UnifiedMembersResult`   |
 
-Lists all groups the authenticated user has joined (`GET /group/groups/v2`).
+### Parameter details
 
-### `get(groupId: number | string): Promise<Group | null>`
+#### `search(options: SearchGroupsOptions)`
 
-Fetches details of a specific joined group.
+| Field                                  | Required | Constraint           |
+| :------------------------------------- | :------- | :------------------- |
+| `q`                                    | yes      | Trimmed, min 2 chars |
+| `categoryId`                           | no       | Positive integer     |
+| `orderType`                            | no       | See `GroupOrderType` |
+| `onlyAvailable`, `onlyCam`, `onlyOpen` | no       | Booleans             |
+| `countryId`, `lang`                    | no       | Strings              |
+| `page`, `limit`                        | no       | Positive integers    |
 
-### `searchJoined(query: string): Promise<Group[]>`
+#### `create(params: CreateGroupParams)`
 
-Case-insensitive search across joined groups by name, category, or owner.
+| Field                  | Default    | Constraint               |
+| :--------------------- | :--------- | :----------------------- |
+| `title`                | —          | Trimmed, non-empty       |
+| `categoryId`           | —          | Positive integer         |
+| `description`          | `""`       | String                   |
+| `maxPeopleNum`         | `50`       | 2–100                    |
+| `joinType`             | `"DIRECT"` | `"DIRECT" \| "APPROVAL"` |
+| `password`             | `null`     | String or null           |
+| `minDailyStudySeconds` | —          | Non-negative integer     |
+| `questions`            | —          | `string[]`               |
+| `allowChat`            | `true`     | Boolean                  |
 
-### `validateTitle(title: string): Promise<ValidateTitleResult>`
+#### `apply(groupId, { answers })`
 
-Validates whether a group title is valid and available (`POST /group/make/title/validate`).
+`answers` must contain at least one string.
 
-### `create(params: CreateGroupParams): Promise<{ id: number; title: string }>`
+#### `reviewApplicant(groupId, params)`
 
-Creates a new study group (`POST /group/make/v2`).
+```ts
+{
+  applicantUserId: number; // positive integer
+  approved: boolean;
+  rejectReason?: string | null;
+}
+```
 
-### `join(groupId: number | string, options?: JoinGroupOptions): Promise<void>`
+Sends `reject_reason: rejectReason ?? null`.
 
-Joins an open or password-protected group (`POST /group/join/v2`).
+#### `getMembers(groupId, options?)`
 
-### `apply(groupId: number | string, params: ApplyGroupParams): Promise<void>`
+```ts
+{ includeAllUsers?: boolean }
+```
 
-Submits an application with answers to group questions (`POST /group/group-user/join-info`).
+Maps to `include_all_users`. The query always contains `groupID`; it never contains
+`countryID`.
 
-### `reviewApplicant(groupId: number | string, params: ReviewApplicantParams): Promise<void>`
+#### `getAttendances(groupId, startDate, endDate)`
 
-Approves or rejects a membership applicant (`POST /group/group-user/join/approve-or-reject`).
+Dates are passed through unchanged; `YYYY-MM-DD` is expected.
 
-### `leave(groupId: number | string, userId?: number): Promise<void>`
+#### `getLeaderboard(groupId, type = "daily")`
 
-Leaves a group (`POST /group/leave`).
+`type` is `"daily" | "weekly" | "monthly"`. If upstream returns a different `type` string,
+it is passed through on the result.
 
-### `warnMember(groupId: number | string, userId: number): Promise<void>`
+#### `sendChatMessage(groupId, message, options?)`
 
-Issues an official warning strike to a member (`POST /group/warn`).
+```ts
+{ imageUrls?: string[] } // defaults to []
+```
 
-### `cancelWarning(groupId: number | string, userId: number): Promise<void>`
+Message is trimmed; empty input throws `YptValidationError`.
 
-Cancels/revokes a previously issued warning strike (`POST /group/warn/cancel`).
+#### `postNotice(groupId, content, options?)`
 
-### `kickMember(groupId: number | string, userId: number): Promise<void>`
+```ts
+{ sendPush?: boolean } // defaults to true
+```
 
-Expels a member from the group (`POST /group/kick-out`).
+Content is trimmed; empty input throws `YptValidationError`.
 
-### `blacklistMember(groupId: number | string, userId: number): Promise<void>`
+#### `listAllMembers(options?)`
 
-Bans and blacklists a member permanently (`POST /group/black/add`).
+```ts
+{ concurrency?: number } // positive integer, default 3
+```
 
-### `removeBlacklist(groupId: number | string, userId: number): Promise<void>`
-
-Removes a member from the group blacklist (`POST /group/black/delete`).
-
-### `listBlacklist(groupId: number | string): Promise<BlacklistUser[]>`
-
-Returns all blacklisted users for the group (`GET /group/black/all`).
-
-### `getMembers(groupId: number | string, options?: GetMembersOptions): Promise<GroupMember[]>`
-
-Fetches all members of a group with real-time live study duration calculations (`GET /logs/group/members/v2`).
-
-### `getAttendances(groupId: number | string, startDate: string, endDate: string): Promise<GroupAttendanceResult>`
-
-Fetches attendance compliance and daily study matrix across a date range (`GET /logs/v70701/group/attendances`).
-
-### `getLeaderboard(groupId: number | string, type?: LeaderboardType): Promise<GroupLeaderboardResult>`
-
-Fetches study time rankings by period: `"daily" | "weekly" | "monthly" | "total"` (`GET /logs/group/member/ranks`).
-
-### `nudge(groupId: number | string, targetUserId: number): Promise<void>`
-
-Sends an in-app vibration nudge to an individual inactive member (`POST /group/push/shake`).
-
-### `nudgeAll(groupId: number | string): Promise<void>`
-
-Sends a vibration nudge to all inactive group members (`POST /group/push/shake/all`).
-
-### `sendChatMessage(groupId: number | string, message: string, options?: SendChatOptions): Promise<void>`
-
-Sends a text or image message to the group chat (`POST /group/chat`).
-
-### `postNotice(groupId: number | string, content: string, options?: PostNoticeOptions): Promise<void>`
-
-Pins an announcement notice banner to the group home (`POST /group/notice`).
-
-### `listAllMembers(options?: ListAllMembersOptions): Promise<UnifiedMembersResult>`
-
-Aggregates and deduplicates members across all joined groups into a unified leaderboard.
+Fetches every joined group's roster with bounded concurrency and merges duplicates. See
+[Groups → Cross-group roster](./groups.md#6-cross-group-unified-roster).
 
 ---
 
-## Types & Data Models
+## 5. Types
 
-### `YptUser`
+### Auth & user
 
-```typescript
-export interface YptUser {
+```ts
+type SocialProvider = "KAKAO" | "NAVER" | "GOOGLE" | "APPLE" | "FACEBOOK";
+
+interface SignInParams {
+  email: string;
+  password: string;
+}
+
+interface SignInOptions {
+  splash?: boolean;
+  strictPasswordValidation?: boolean;
+}
+
+interface SocialSignUpParams {
+  provider: SocialProvider;
+  token: string;
+  nickname: string;
+  operatingSystem?: "android" | "ios";
+  terms?: boolean;
+  privacy?: boolean;
+  ageOver14?: boolean;
+}
+
+interface SplashDevice {
+  version: number;
+  pushToken: string;
+  timezone: string;
+  deviceType: string;
+  osVersion: number;
+  deviceModel: string;
+  pv: number;
+}
+
+interface SplashLoginParams {
+  refreshToken?: string;
+  device?: Partial<SplashDevice>;
+}
+
+interface SplashLoginResult {
+  success: boolean;
+  accessToken?: string;
+  refreshToken?: string;
+  expiresAt?: number;
+}
+
+interface SessionTokens {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt?: number;
+}
+
+interface SessionState {
+  token?: string;
+  accessToken?: string;
+  refreshToken?: string;
+  expiresAt?: number;
+  user?: YptUser;
+}
+
+interface YptUser {
   id: number;
   nickname: string;
   email: string;
-  today: string | null;
+  today: string | null; // server-side "today" (YYYY-MM-DD)
   statusMsg?: string;
   profileImage?: string;
   flames?: number;
@@ -264,86 +527,116 @@ export interface YptUser {
 }
 ```
 
-### `SocialProvider`
+> `YptUser.id` is `0` and `email` may be `""` if upstream omits them. Legacy sign-in falls
+> back to the submitted email.
 
-```typescript
-export type SocialProvider = "KAKAO" | "NAVER" | "GOOGLE" | "APPLE" | "FACEBOOK";
-```
+### Groups
 
-### `SocialSignUpParams`
+```ts
+type GroupRole = "Owner / Manager" | "Cam Study" | "Member";
+type GroupJoinType = "DIRECT" | "APPROVAL";
+type GroupMemberRole = "OWNER" | "MANAGER" | "MEMBER";
+type GroupOrderType = "time" | "attendance" | "cam" | "mission" | "owner" | "new" | "promotedAt";
+type LeaderboardType = "daily" | "weekly" | "monthly";
 
-```typescript
-export interface SocialSignUpParams {
-  provider: SocialProvider;
-  token: string;
-  nickname: string;
-  operatingSystem?: "android" | "ios";
-  terms?: boolean;
-  privacy?: boolean;
-  ageOver14?: boolean;
-}
-```
-
-### `SessionInfo`
-
-```typescript
-export interface SessionInfo {
-  accessToken: string;
-  refreshToken?: string;
-  expiresAt?: number;
-  user?: YptUser;
-}
-```
-
-### `Group`
-
-```typescript
-export interface Group {
+interface Group {
   id: number;
   name: string;
-  category?: string;
-  owner?: string;
+  category: string | null;
+  owner: string | null;
   role: GroupRole;
   memberCount: number;
   maxCapacity: number;
   isPrivate: boolean;
-  notice?: string;
+  notice: string | null;
 }
-```
 
-### `SearchGroupResult`
+interface SearchGroupsOptions {
+  q: string;
+  categoryId?: number;
+  orderType?: GroupOrderType;
+  onlyAvailable?: boolean;
+  onlyCam?: boolean;
+  onlyOpen?: boolean;
+  countryId?: string;
+  lang?: string;
+  page?: number;
+  limit?: number;
+}
 
-```typescript
-export interface SearchGroupResult {
+interface SearchGroupResult {
   id: number;
   name: string;
-  description?: string;
-  category?: string;
-  categoryId?: number;
-  owner?: string;
+  description: string | null;
+  category: string | null;
+  categoryId: number | null;
+  owner: string | null;
   memberCount: number;
   maxCapacity: number;
   isPrivate: boolean;
   hasCam: boolean;
-  joinType: "DIRECT" | "APPROVAL";
-  averageStudySeconds?: number;
-  attendanceRate?: number;
+  joinType: GroupJoinType;
+  averageStudySeconds: number | null;
+  attendanceRate: number | null;
+}
+
+interface CreateGroupParams {
+  title: string;
+  categoryId: number;
+  description: string;
+  maxPeopleNum?: number;
+  joinType?: GroupJoinType;
+  password?: string | null;
+  minDailyStudySeconds?: number;
+  questions?: string[];
+  allowChat?: boolean;
+}
+
+interface ValidateTitleResult {
+  valid: boolean;
+  message?: string;
+}
+
+interface JoinGroupOptions {
+  password?: string;
+}
+
+interface ApplyGroupParams {
+  answers: string[];
+}
+
+interface ReviewApplicantParams {
+  applicantUserId: number;
+  approved: boolean;
+  rejectReason?: string | null;
+}
+
+interface BlacklistUser {
+  userId: number;
+  nickname: string;
+  createdAt: string | null;
 }
 ```
 
-### `GroupMember`
+### Telemetry
 
-```typescript
-export interface GroupMember {
+```ts
+interface CurrentSubject {
+  id: number;
+  name: string;
+  color?: string;
+}
+
+interface GroupMember {
   userId: number;
   nickname: string;
-  category?: string;
+  category: string | null;
   isStudying: boolean;
   isPaused: boolean;
   currentSubject: string | null;
   subjectDetails?: CurrentSubject;
-  studyDate?: string;
-  lastActiveDate?: string;
+  studyDate: string | null;
+  lastActiveDate: string | null;
   todayStudyMs: number;
   todayStudyTime: string;
   liveStudyMs: number;
@@ -357,57 +650,287 @@ export interface GroupMember {
   stateIcon?: string;
   profileImage?: string;
   hasActiveCam?: boolean;
-  camSnapshotUrl?: string;
+  camSnapshotUrl?: string | null;
   warningCount?: number;
 }
-```
 
-### `GroupAttendanceResult`
+interface GetMembersOptions {
+  includeAllUsers?: boolean;
+}
 
-```typescript
-export interface GroupAttendanceResult {
+interface GroupAttendanceDay {
+  date: string;
+  studySeconds: number;
+  passed: boolean;
+}
+
+interface MemberAttendance {
+  userId: number;
+  nickname: string;
+  days: GroupAttendanceDay[];
+  streakDays?: number;
+  totalSeconds?: number;
+}
+
+interface GroupAttendanceResult {
   startDate: string;
   endDate: string;
   attendances: MemberAttendance[];
 }
-```
 
-### `GroupLeaderboardResult`
+interface GroupRankMember {
+  rank: number;
+  userId: number;
+  nickname: string;
+  studySeconds: number;
+  studyTime: string;
+  profileImage: string | null;
+}
 
-```typescript
-export interface GroupLeaderboardResult {
+interface GroupLeaderboardResult {
   type: LeaderboardType;
   ranks: GroupRankMember[];
 }
+
+interface UnifiedMember extends GroupMember {
+  groupIds: number[];
+  groupNames: string[];
+}
+
+interface UnifiedMembersResult {
+  members: UnifiedMember[];
+  totalGroups: number;
+  successfulGroups: number;
+  failedGroups: Array<{ groupId: number; error: unknown }>;
+  totalRawMembers: number;
+  uniqueMemberCount: number;
+  duplicatesRemoved: number;
+}
+
+interface SendChatOptions {
+  imageUrls?: string[];
+}
+
+interface PostNoticeOptions {
+  sendPush?: boolean;
+}
+
+interface ListAllMembersOptions {
+  concurrency?: number;
+}
 ```
+
+### HTTP and raw types
+
+```ts
+type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
+interface HttpClientOptions {
+  baseUrl: string;
+  fetch: FetchLike;
+  userAgent: string;
+  headers: Record<string, string>;
+  timeoutMs: number;
+  maxRetries: number;
+  retryDelayMs: number;
+  getToken: () => string | undefined;
+  authScheme?: "Bearer" | "JWT";
+}
+
+interface RequestOptions {
+  query?: Record<string, string | number | boolean | undefined>;
+  body?: unknown;
+  auth?: "token" | "bare" | "none";
+}
+
+interface RawEnvelope {
+  s: boolean;
+  c?: number | string;
+  m?: string;
+}
+```
+
+Raw wire types (`RawUser`, `RawGroup`, `RawMember`, `RawModernGroupMember`, …) are exported
+for advanced consumers and mapper authoring. See the
+[minified-key glossary](./upstream-api.md#5-minified-key-glossary).
 
 ---
 
-## Error Handling
+## 6. Utilities
 
-All library errors inherit from the root `YptError`:
+### `formatDuration(ms: number): string`
 
-```
-YptError
- ├── YptValidationError     # Thrown when inputs or upstream responses fail Zod schema validation
- ├── YptNetworkError        # Thrown when connection drops, DNS fails, or request times out
- ├── YptHttpError           # Thrown on unexpected HTTP non-2xx status codes
- └── YptApiError            # Thrown on YPT logical error envelopes ({ s: false, c: ..., m: ... })
-      └── YptAuthError      # Thrown on authentication/authorization failures (HTTP 401, codes 112-114)
+Formats milliseconds as `HH:MM:SS`. Hours may exceed 99. Negative input clamps to
+`"00:00:00"`.
+
+```ts
+formatDuration(15_300_000); // "04:15:00"
 ```
 
-### Example
+### `avatarUrl(member, cdnUrl?): string | null`
 
-```typescript
-import { YptAuthError, YptValidationError } from "ypt-js";
+```ts
+avatarUrl(
+  member: { userId: number; studiconId: number | null; hasCustomAvatar: boolean },
+  cdnUrl = "https://alicdn.tgclab.com",
+): string | null
+```
 
-try {
-  await client.auth.signIn({ email: "invalid", password: "" });
-} catch (err) {
-  if (err instanceof YptValidationError) {
-    console.error("Validation issue on:", err.target, err.issues);
-  } else if (err instanceof YptAuthError) {
-    console.error("Auth failed:", err.message, "code:", err.code);
-  }
+- Custom avatar → `${cdn}/user/profile/${userId}.jpg`
+- Otherwise `${cdn}/sc.v2/${studiconId}/normal1.png`
+- `null` when neither is available.
+
+### `validatePassword(password: string): PasswordValidationResult`
+
+```ts
+interface PasswordValidationResult {
+  valid: boolean;
+  reason?: string;
 }
 ```
+
+Rules: minimum 8 characters and at least 2 of uppercase, lowercase, digits, special.
+
+### `mergeMembers(entries): UnifiedMember[]`
+
+```ts
+mergeMembers(
+  entries: Array<{ group: Pick<Group, "id" | "name">; members: GroupMember[] }>,
+): UnifiedMember[]
+```
+
+Deduplicates by `userId`, prefers active/unpaused telemetry, takes the maximum study time,
+accumulates group ids/names, and sorts by `liveStudyMs` descending.
+
+### Raw → domain mappers
+
+| Function          | Signature                                                                               | Notes                        |
+| :---------------- | :-------------------------------------------------------------------------------------- | :--------------------------- |
+| `mapUser`         | `(raw: RawSignInResponse, fallbackEmail = "") => YptUser`                               | Handles legacy + modern      |
+| `mapGroups`       | `(raw: RawGroupsResponse) => Group[]`                                                   | Flattens `ms`/`cs`/`gs`/`ps` |
+| `mapMember`       | `(raw: RawMember \| RawModernGroupMember, now: number, cdnUrl?) => GroupMember \| null` | Skips records without an id  |
+| `mapMembers`      | `(raw: RawMembersResponse, now: number, cdnUrl?) => GroupMember[]`                      | Handles `ms`/`members`       |
+| `mapSearchGroups` | `(raw: RawSearchGroupsResponse) => SearchGroupResult[]`                                 | Handles `groups`/`list`      |
+| `mapAttendances`  | `(raw: RawAttendanceResponse) => GroupAttendanceResult`                                 |                              |
+| `mapLeaderboard`  | `(raw: RawRanksResponse, fallbackType = "daily") => GroupLeaderboardResult`             |                              |
+
+`cdnUrl` defaults to `https://alicdn.tgclab.com`.
+
+---
+
+## 7. Validation schemas
+
+All schemas are exported and can be reused for your own validation.
+
+### Input schemas
+
+| Schema                                          | Key constraints                                          |
+| :---------------------------------------------- | :------------------------------------------------------- |
+| `SignInParamsSchema`                            | Trimmed email matching `x@y.z`; non-empty password       |
+| `SignInOptionsSchema`                           | Optional booleans                                        |
+| `SocialProviderSchema`                          | `KAKAO \| NAVER \| GOOGLE \| APPLE \| FACEBOOK`          |
+| `SocialSignUpParamsSchema`                      | Non-empty token/nickname; defaults for OS and agreements |
+| `SplashLoginParamsSchema`                       | Optional refresh token and device record                 |
+| `GroupIdSchema`                                 | Positive integer or numeric string → normalized string   |
+| `GroupOrderTypeSchema`                          | Sort-order enum                                          |
+| `SearchGroupsOptionsSchema`                     | `q` min 2; positive ids/pages                            |
+| `GroupJoinTypeSchema`                           | `DIRECT \| APPROVAL`                                     |
+| `CreateGroupParamsSchema`                       | Title, category, capacity 2–100, defaults                |
+| `JoinGroupOptionsSchema`                        | Optional password                                        |
+| `ApplyGroupParamsSchema`                        | `answers` min 1                                          |
+| `ReviewApplicantParamsSchema`                   | Positive applicant id; boolean approval                  |
+| `ListAllMembersOptionsSchema`                   | Positive concurrency                                     |
+| `YptJsOptionsSchema` / `YptClientOptionsSchema` | Valid URLs, non-negative numbers, known enums            |
+
+### Raw response schemas
+
+`RawEnvelopeSchema`, `RawUserSchema`, `RawModernSignInResponseSchema`,
+`RawLegacySignInResponseSchema`, `RawSignInResponseSchema`, `RawSplashLoginResponseSchema`,
+`RawFirebaseTokenResponseSchema`, `RawDailyLogSchema`, `RawMemberSchema`,
+`RawGroupSchema`, `RawGroupsResponseSchema`, `RawMembersResponseSchema`,
+`RawSearchResultGroupSchema`, `RawSearchGroupsResponseSchema`,
+`RawModernGroupMemberSchema`, `RawAttendanceDaySchema`, `RawMemberAttendanceSchema`,
+`RawAttendanceResponseSchema`, `RawRankMemberSchema`, `RawRanksResponseSchema`,
+`RawBlacklistUserSchema`, `RawBlacklistResponseSchema`.
+
+All raw object schemas use `.passthrough()` so unknown upstream fields do not fail
+validation. Required fields are intentionally minimal.
+
+### Inferred types
+
+`ValidatedSignInParams`, `ValidatedSignInOptions`, `ValidatedSocialSignUpParams`,
+`ValidatedSplashLoginParams`, `ValidatedSearchGroupsOptions`, `ValidatedCreateGroupParams`,
+`ValidatedJoinGroupOptions`, `ValidatedApplyGroupParams`, `ValidatedReviewApplicantParams`,
+`ValidatedJsOptions`, `ValidatedClientOptions`.
+
+---
+
+## 8. Errors
+
+```text
+YptError
+├── YptValidationError        input or upstream response failed Zod validation
+├── YptNetworkError           no HTTP response (DNS, TLS, timeout, offline)
+├── YptHttpError              non-2xx without a YPT error envelope, or non-JSON body
+└── YptApiError               YPT envelope error { s: false, c, m }
+    └── YptAuthError          auth failure (codes 112/113/114, HTTP 401, no token)
+```
+
+| Class                | Fields                                            | Trigger                                  |
+| :------------------- | :------------------------------------------------ | :--------------------------------------- |
+| `YptError`           | `message`, `cause?`                               | Base class                               |
+| `YptValidationError` | `issues`, `target: "input" \| "response"`, `raw?` | Invalid input; schema-invalid response   |
+| `YptNetworkError`    | `cause`                                           | Fetch rejection / timeout / DNS          |
+| `YptHttpError`       | `status`, `url`, `body`                           | Non-2xx without envelope; non-JSON 2xx   |
+| `YptApiError`        | `code?`, `status?`, `body`                        | Envelope `s: false` with a non-auth code |
+| `YptAuthError`       | inherits `YptApiError`                            | Auth codes, 401, missing token           |
+
+`AUTH_ERROR_CODES` is a `ReadonlySet<number>` containing `112`, `113`, `114`.
+
+See [Error handling](./error-handling.md) for recovery patterns.
+
+---
+
+## 9. HTTP & retry semantics
+
+### Default headers
+
+| Header          | Value                                                      |
+| :-------------- | :--------------------------------------------------------- |
+| `Content-Type`  | `application/json`                                         |
+| `User-Agent`    | `Dart/3.11 (dart:io)`                                      |
+| `Authorization` | `JWT <token>` (or bare `JWT`, or `Bearer` when configured) |
+
+Custom `headers` are merged last and can override any of them.
+
+### Retry matrix
+
+| Condition               | `GET`                                 | `POST`                                |
+| :---------------------- | :------------------------------------ | :------------------------------------ |
+| Network error / timeout | Retry up to `maxRetries`              | No                                    |
+| `429`                   | Retry, honoring `Retry-After` (≤ 30s) | No                                    |
+| `5xx`                   | Retry up to `maxRetries`              | No                                    |
+| `401`                   | One re-auth + retry (when configured) | One re-auth + retry (when configured) |
+| Other `4xx`             | No                                    | No                                    |
+
+Backoff is exponential (`retryDelayMs * 2^(attempt-1)`) with up to 25% jitter. Total
+attempts for a `GET` are `maxRetries + 1`.
+
+### Response parsing order
+
+1. Read the body as text; attempt `JSON.parse`.
+2. If the body is `{ s: false, … }`, throw `YptAuthError` or `YptApiError` — even on a `2xx`.
+3. If the status is `401`, throw `YptAuthError`.
+4. If the status is non-2xx, throw `YptHttpError`.
+5. If the body is missing/non-object, throw `YptHttpError`.
+6. Hand the object to the resource's Zod response schema, then the mapper.
+
+---
+
+## Related
+
+- [Getting started](./getting-started.md)
+- [Authentication](./authentication.md)
+- [Groups](./groups.md)
+- [Error handling](./error-handling.md)
+- [Upstream API](./upstream-api.md)
